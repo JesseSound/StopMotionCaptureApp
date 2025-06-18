@@ -91,6 +91,7 @@ class StopMotionApp(QWidget):
 
         self.timeline = QListWidget()
         self.timeline.setFixedHeight(100)
+        self.timeline.itemClicked.connect(self.preview_selected_frame)
 
         self.capture_btn.clicked.connect(self.capture_frame)
         self.capture_btn.setToolTip("Take a snapshot from the live feed")
@@ -123,6 +124,8 @@ class StopMotionApp(QWidget):
         self.play_pause_btn.setCheckable(True)
         self.play_pause_btn.toggled.connect(self.play_pause_toggle)
         self.play_pause_btn.setToolTip("Play/Pause preview")
+        self.back_to_live_btn = QPushButton("Back to Live Feed")
+        self.back_to_live_btn.clicked.connect(self.resume_live_feed)
 
         self.loop_checkbox = QCheckBox("Loop")
         self.loop_checkbox.setChecked(True)
@@ -170,6 +173,8 @@ class StopMotionApp(QWidget):
         controls.addWidget(self.fps_spin)
         controls.addWidget(self.export_btn)
         controls.addWidget(self.export_gif_btn)
+        controls.addWidget(self.back_to_live_btn)
+
         layout.addLayout(controls)
 
         layout.addWidget(QLabel("Timeline:"))
@@ -269,6 +274,16 @@ class StopMotionApp(QWidget):
             else:
                 QMessageBox.warning(self, "Camera Error", f"Failed to open camera {index}")
                 self.capture_btn.setEnabled(False)
+    def preview_selected_frame(self, item):
+        index = self.timeline.row(item)
+        if 0 <= index < len(self.captured_frames):
+            frame = self.captured_frames[index]
+            if frame is not None:
+                # Convert the frame to QImage and show it in the live preview
+                height, width, channel = frame.shape
+                bytes_per_line = 3 * width
+                q_img = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+                self.video_label.setPixmap(QPixmap.fromImage(q_img))
 
     def update_frame(self):
         if not self.cap:
@@ -287,8 +302,10 @@ class StopMotionApp(QWidget):
             qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
             pix = QPixmap.fromImage(qt_image).scaled(self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio)
             self.video_label.setPixmap(pix)
-
-
+    def resume_live_feed(self):
+        if self.cap and self.cap.isOpened():
+            if not self.timer.isActive():
+                self.timer.start(30)
 
 
     def capture_frame(self):
