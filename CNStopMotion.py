@@ -275,15 +275,18 @@ class StopMotionApp(QWidget):
                 QMessageBox.warning(self, "Camera Error", f"Failed to open camera {index}")
                 self.capture_btn.setEnabled(False)
     def preview_selected_frame(self, item):
-        index = self.timeline.row(item)
-        if 0 <= index < len(self.captured_frames):
-            frame = self.captured_frames[index]
-            if frame is not None:
-                # Convert the frame to QImage and show it in the live preview
-                height, width, channel = frame.shape
-                bytes_per_line = 3 * width
-                q_img = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
-                self.video_label.setPixmap(QPixmap.fromImage(q_img))
+        self.timer.stop()
+        frame = item.data(Qt.UserRole)
+
+        if isinstance(frame, np.ndarray):
+            height, width, channel = frame.shape
+            bytes_per_line = 3 * width
+            q_img = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+            self.video_label.setPixmap(QPixmap.fromImage(q_img))
+        else:
+            print("Warning: Expected image data but got something else")
+
+
 
     def update_frame(self):
         if not self.cap:
@@ -340,13 +343,26 @@ class StopMotionApp(QWidget):
 
     def refresh_timeline(self):
         self.timeline.clear()
-        thumbnail_size = 80
-        for frame_path in self.captured_frames:
+        for idx, frame_path in enumerate(self.captured_frames):
             item = QListWidgetItem()
-            pixmap = QPixmap(frame_path).scaled(thumbnail_size, thumbnail_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            item.setIcon(QIcon(pixmap))
-            item.setText(os.path.basename(frame_path))
+            
+            # Load the image for thumbnail and data storage
+            frame = cv2.imread(frame_path)
+            if frame is None:
+                continue  # Skip if image failed to load
+            
+            # Convert to Qt image for thumbnail
+            height, width, channel = frame.shape
+            bytes_per_line = 3 * width
+            q_img = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+            thumb = QPixmap.fromImage(q_img).scaledToHeight(80)
+
+            item.setIcon(QIcon(thumb))
+            item.setText(f"Frame {idx}")
+            item.setData(Qt.UserRole, frame)  # Store the actual image (numpy array)
+
             self.timeline.addItem(item)
+
 
 
     def undo(self):
