@@ -13,6 +13,53 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPixmap, QImage, QIcon, QKeySequence, QShortcut
 from PySide6.QtCore import Qt, QTimer
 
+from PySide6.QtCore import QThread, Signal
+# 1) Camera search dialog popup
+class CameraSearchDialog(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.Window | Qt.WindowTitleHint | Qt.CustomizeWindowHint)
+        self.setWindowTitle("Please wait")
+        self.setFixedSize(200, 80)
+        self.setWindowModality(Qt.ApplicationModal)
+
+        layout = QVBoxLayout()
+        label = QLabel("Hunting down cameras...")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+# 2) Camera search thread (non-blocking)
+class CameraSearchThread(QThread):
+    cameras_found = Signal(list)
+
+    def run(self):
+        found_cameras = []
+        for i in range(20):  # max 20 to be safe, but you can set a lower max
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                found_cameras.append(i)
+                cap.release()
+            else:
+                # Stop searching on first failure
+                break
+        self.cameras_found.emit(found_cameras)
+class CameraOpenThread(QThread):
+    camera_opened = Signal(bool, int)  # success flag, camera index
+
+    def __init__(self, index):
+        super().__init__()
+        self.index = index
+        self.cap = None
+
+    def run(self):
+        cap = cv2.VideoCapture(self.index)
+        success = cap.isOpened()
+        cap.release()
+
+            # emit result to main thread
+        self.camera_opened.emit(success, self.index)
+            # store cap only if needed (see note)
+        self.cap = cap
 
 class StopMotionApp(QWidget):
     def __init__(self):
@@ -23,21 +70,20 @@ class StopMotionApp(QWidget):
         self.captured_frames = []
         self.undo_stack = []
         self.redo_stack = []
-
+        self.camera_search_thread = None
+        self.camera_open_thread = None
         self.current_camera_index = 0
         self.cap = None
-        self.available_cameras = self.detect_cameras()
-
+        self.camera_open_thread = None
+        self.available_cameras = [] 
+       
         self.loop_playback = True
 
         self.camera_selector = QComboBox()
         self.capture_btn = QPushButton("Capture Frame")
-        if not self.available_cameras:
-            self.camera_selector.addItem("No Camera Found")
-            self.capture_btn.setEnabled(False)
-        else:
-            for idx in self.available_cameras:
-                self.camera_selector.addItem(f"Camera {idx}", idx)
+        self.open_camera(0)
+        self.capture_btn.setEnabled(False)
+      
         self.camera_selector.currentIndexChanged.connect(self.change_camera)
 
         self.video_label = QLabel()
@@ -142,7 +188,7 @@ class StopMotionApp(QWidget):
 
 
         self.setLayout(layout)
-
+        self.camera_selector.currentIndexChanged.connect(self.change_camera)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(30)
@@ -151,30 +197,78 @@ class StopMotionApp(QWidget):
         self.playback_timer.timeout.connect(self.playback_next_frame)
 
         self.playback_index = 0
-
-        if self.available_cameras:
-            self.open_camera(self.current_camera_index)
+        self.start_camera_search()
+       
 
         QShortcut(QKeySequence("Ctrl+Z"), self).activated.connect(self.undo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self).activated.connect(self.redo)
+    # In your StopMotionApp, modify start_camera_search and open_camera logic:
 
-    def detect_cameras(self):
-        index = 0
-        arr = []
-        while True:
-            cap = cv2.VideoCapture(index)
-            if not cap.read()[0]:
-                break
-            else:
-                arr.append(index)
-            cap.release()
-            index += 1
-        return arr
+    def start_camera_search(self):
+        # Only start if no active search thread running
+        if self.camera_search_thread and self.camera_search_thread.isRunning():
+            return
+
+        self.camera_search_dialog = CameraSearchDialog(self)
+        self.camera_search_dialog.show()
+
+        self.camera_search_thread = CameraSearchThread()
+        self.camera_search_thread.cameras_found.connect(self.on_cameras_found)
+        self.camera_search_thread.finished.connect(self.camera_search_thread.deleteLater)
+        self.camera_search_thread.start()
+
+    def on_cameras_found(self, cameras):
+        if self.camera_search_dialog:
+            self.camera_search_dialog.close()
+            self.camera_search_dialog = None
+
+        # Update combo box only with cameras excluding current opened (if any)
+        self.available_cameras = cameras
+        self.camera_selector.clear()
+
+        if not cameras:
+            self.camera_selector.addItem("No Camera Found")
+            self.capture_btn.setEnabled(False)
+            QMessageBox.warning(self, "No Cameras", "No cameras were found.")
+        else:
+            for idx in cameras:
+                self.camera_selector.addItem(f"Camera {idx}", idx)
+
+            # If no camera was opened earlier or current cam not in list, open first found
+            if self.cap is None or self.current_camera_index not in cameras:
+                self.open_camera(cameras[0])
 
     def open_camera(self, index):
         if self.cap:
             self.cap.release()
-        self.cap = cv2.VideoCapture(index)
+            self.cap = None
+
+        if self.camera_open_thread and self.camera_open_thread.isRunning():
+            self.camera_open_thread.quit()
+            self.camera_open_thread.wait()
+            self.camera_open_thread = None
+
+        self.camera_selector.setEnabled(False)
+        self.capture_btn.setEnabled(False)
+
+        self.camera_open_thread = CameraOpenThread(index)
+        self.camera_open_thread.camera_opened.connect(self.on_camera_opened)
+        self.camera_open_thread.finished.connect(self.camera_open_thread.deleteLater)
+        self.camera_open_thread.start()
+
+    def on_camera_opened(self, success, index):
+        self.camera_selector.setEnabled(True)
+        if success:
+            self.cap = cv2.VideoCapture(index)
+            self.capture_btn.setEnabled(True)
+            self.current_camera_index = index
+        else:
+            # If camera 0 failed on app start, try start search now
+            if index == 0:
+                self.start_camera_search()
+            else:
+                QMessageBox.warning(self, "Camera Error", f"Failed to open camera {index}")
+                self.capture_btn.setEnabled(False)
 
     def update_frame(self):
         if not self.cap:
@@ -429,6 +523,11 @@ class StopMotionApp(QWidget):
         imageio.mimsave(save_path, images, duration=duration)
 
         QMessageBox.information(self, "Export Complete", f"GIF animation saved to:\n{save_path}")
+    def closeEvent(self, event):
+        if self.camera_open_thread and self.camera_open_thread.isRunning():
+            self.camera_open_thread.quit()
+            self.camera_open_thread.wait()
+        event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
