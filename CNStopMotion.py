@@ -76,6 +76,18 @@ class CameraOpenThread(QThread):
             self.cap.release()
             self.cap = None
 
+class ProjectLoadingDialog(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.Window | Qt.WindowTitleHint | Qt.CustomizeWindowHint)
+        self.setWindowTitle("Opening Project")
+        self.setFixedSize(300, 100)
+        self.setWindowModality(Qt.ApplicationModal)
+
+        layout = QVBoxLayout()
+        label = QLabel("Cyber Ninjas Building New Project...\nPlease Hold...")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
 
 
 class StopMotionApp(QWidget):
@@ -101,7 +113,8 @@ class StopMotionApp(QWidget):
         self.capture_btn = QPushButton("Capture Frame")
         
         self.capture_btn.setEnabled(False)
-      
+        self.project_loading_dialog = None
+
         self.cap_lock = Lock()
 
         self.video_label = QLabel()
@@ -127,6 +140,9 @@ class StopMotionApp(QWidget):
         self.delete_btn = QPushButton("Delete Frame")
         self.delete_btn.clicked.connect(self.delete_frame)
         self.delete_btn.setToolTip("Remove selected frame")
+        self.duplicate_btn = QPushButton("Duplicate Frame")
+        self.duplicate_btn.clicked.connect(self.duplicate_frame)
+        self.duplicate_btn.setToolTip("Make a copy of the selected frame")
 
         self.undo_btn = QPushButton("Undo")
         self.undo_btn.clicked.connect(self.undo)
@@ -202,6 +218,7 @@ class StopMotionApp(QWidget):
         controls.addWidget(self.export_btn)
         controls.addWidget(self.export_gif_btn)
         controls.addWidget(self.back_to_live_btn)
+        controls.addWidget(self.duplicate_btn)
 
         layout.addLayout(controls)
 
@@ -289,9 +306,9 @@ class StopMotionApp(QWidget):
 
     def open_camera(self, index):
         with self.cap_lock:
-            if self.cap:
-                self.cap.release()
-                self.cap = None
+            if self.cap and self.cap.isOpened() and self.current_camera_index == index:
+                print("Camera already open and matches requested index.")
+                return
 
         # Instead of forcibly quitting and waiting, just skip starting a new thread if one is running
         if self.camera_open_thread and self.camera_open_thread.isRunning():
@@ -300,6 +317,9 @@ class StopMotionApp(QWidget):
 
         self.camera_selector.setEnabled(False)
         self.capture_btn.setEnabled(False)
+        self.video_label.setText("Loading camera feed...")
+        self.video_label.setAlignment(Qt.AlignCenter)
+
 
         self.camera_open_thread = CameraOpenThread(index)
         self.camera_open_thread.camera_opened.connect(self.on_camera_opened)
@@ -319,6 +339,10 @@ class StopMotionApp(QWidget):
 
     def on_camera_opened(self, success, index, cap):
         self.camera_selector.setEnabled(True)
+        if self.project_loading_dialog:
+            self.project_loading_dialog.close()
+            self.project_loading_dialog = None
+
         if success and cap:
             with self.cap_lock:
                 if self.cap:
@@ -362,6 +386,7 @@ class StopMotionApp(QWidget):
     def update_frame(self):
         if self.is_playback_mode:
             return  # Don't update live feed while playing back
+
         with self.cap_lock:
             if not self.cap:
                 return
@@ -369,25 +394,14 @@ class StopMotionApp(QWidget):
             ret, frame = self.cap.read()
             if not ret or frame is None:
                 print("Frame read failed, resuming live feed...")
+                self.cap.release()
+                self.cap = None
+                QTimer.singleShot(1000, self.resume_live_feed)
                 return
-        with self.cap_lock:
-            if not self.cap:
-                return
 
-            ret, frame = self.cap.read()
-            self.latest_frame = frame.copy() if ret else None
+            self.latest_frame = frame.copy()
 
-        if not ret or frame is None:
-            print("Frame read failed, resuming live feed...")
-            with self.cap_lock:
-                if self.cap:
-                    self.cap.release()
-                    self.cap = None
-
-            QTimer.singleShot(1000, self.resume_live_feed)
-            return
-
-        # Now outside the lock, do your processing and GUI update with frame
+        # Now that we're outside the lock, process the frame
         if self.onion_checkbox.isChecked() and self.captured_frames:
             self.update_onion_skin()
         else:
@@ -395,8 +409,12 @@ class StopMotionApp(QWidget):
             h, w, ch = frame.shape
             bytes_per_line = ch * w
             qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            pix = QPixmap.fromImage(qt_image).scaled(self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio)
+            pix = QPixmap.fromImage(qt_image).scaled(
+                self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio
+            )
             self.video_label.setPixmap(pix)
+            if self.video_label.text():
+                self.video_label.setText("")
 
     def resume_live_feed(self):
         # Stop playback timer if running
@@ -465,30 +483,41 @@ class StopMotionApp(QWidget):
     def refresh_timeline(self):
         self.timeline.clear()
         icon_size = 80
+        valid_frames = []
 
         for idx, frame_path in enumerate(self.captured_frames):
-            frame = cv2.imread(frame_path)
-            if frame is None:
+            if not os.path.exists(frame_path):
+                print(f"Missing file: {frame_path}")
                 continue
 
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.imread(frame_path)
+            if frame is None:
+                print(f"Unreadable image file: {frame_path}")
+                continue
+
+            try:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            except cv2.error as e:
+                print(f"OpenCV error on frame {frame_path}: {e}")
+                continue
+
             h, w, ch = frame.shape
             bytes_per_line = ch * w
             q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-
             if q_img.isNull():
+                print(f"Null QImage from frame: {frame_path}")
                 continue
 
             thumb = QPixmap.fromImage(q_img).scaledToHeight(icon_size, Qt.SmoothTransformation)
 
-            item = QListWidgetItem(QIcon(thumb), f"{idx}")
+            item = QListWidgetItem(QIcon(thumb), f"{len(valid_frames)}")
             item.setData(Qt.UserRole, frame_path)
-            item.setSizeHint(QSize(icon_size + 10, icon_size + 20))  # ensure space for label
-
+            item.setSizeHint(QSize(icon_size + 10, icon_size + 20))
             self.timeline.addItem(item)
 
+            valid_frames.append(frame_path)
 
-
+        self.captured_frames = valid_frames
 
     def undo(self):
         if not self.undo_stack:
@@ -586,6 +615,7 @@ class StopMotionApp(QWidget):
             )
             if reply == QMessageBox.No:
                 return
+
         self.timer.stop()
         self.autosave_timer.stop()
 
@@ -597,18 +627,26 @@ class StopMotionApp(QWidget):
         self.autosave_timer.start(300_000)
 
         if folder:
+            self.project_loading_dialog = ProjectLoadingDialog(self)
+            self.project_loading_dialog.show()
+
             self.project_path = folder
             self.captured_frames.clear()
             self.undo_stack.clear()
             self.redo_stack.clear()
             self.refresh_timeline()
             self.unsaved_changes = False
+
             undo_cache = os.path.join(folder, ".undo_cache")
             if os.path.exists(undo_cache):
                 shutil.rmtree(undo_cache)
             os.makedirs(undo_cache)
+
             self.open_camera(self.current_camera_index)
 
+            if self.project_loading_dialog:
+                self.project_loading_dialog.close()
+                self.project_loading_dialog = None
 
     def toggle_loop(self, state):
         self.loop_playback = bool(state)
@@ -649,15 +687,43 @@ class StopMotionApp(QWidget):
 
 
     def open_project(self):
-        folder = QFileDialog.getExistingDirectory(self, "Open Project Folder")
+        if self.unsaved_changes:
+            reply = QMessageBox.question(
+                self, "Unsaved Changes",
+                "You have unsaved changes. Do you want to save them before opening a new project?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+            )
+            if reply == QMessageBox.Cancel:
+                return
+            elif reply == QMessageBox.Yes:
+                self.save_project()
+
+        options = QFileDialog.Options()
+        options |= QFileDialog.DontUseNativeDialog
+        folder = QFileDialog.getExistingDirectory(self, "Open Project Folder", options=options)
+
         if folder:
+            self.project_loading_dialog = ProjectLoadingDialog(self)
+            self.project_loading_dialog.show()
+
             self.project_path = folder
             self.captured_frames = []
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+            self.unsaved_changes = False
+
             for file in sorted(os.listdir(folder)):
                 if file.endswith(".png") and file.startswith("frame_"):
-                    self.captured_frames.append(os.path.join(folder, file))
+                    full_path = os.path.join(folder, file)
+                    if os.path.exists(full_path) and cv2.imread(full_path) is not None:
+                        self.captured_frames.append(full_path)
+                    else:
+                        print(f"Skipping missing or unreadable file: {full_path}")
+
             self.refresh_timeline()
             self.load_metadata()
+            self.open_camera(self.current_camera_index)
+
     def change_camera(self, index):
         selected_index = self.camera_selector.itemData(index)
         if selected_index is not None:
@@ -784,6 +850,40 @@ class StopMotionApp(QWidget):
 
         except Exception as e:
             print(f"Failed to load metadata: {e}")
+    def duplicate_frame(self):
+        selected_items = self.timeline.selectedItems()
+        if not selected_items:
+            QMessageBox.information(self, "No Frame Selected", "Please select a frame to duplicate.")
+            return
+
+        for item in selected_items:
+            index = self.timeline.row(item)
+            original_path = self.captured_frames[index]
+
+            if not os.path.exists(original_path):
+                QMessageBox.warning(self, "Error", f"Original frame is missing:\n{original_path}")
+                continue
+
+            # Generate new frame filename
+            new_index = len(self.captured_frames)
+            new_name = f"frame_{new_index:04d}.png"
+            new_path = os.path.join(self.project_path, new_name)
+
+            # Copy the frame file
+            try:
+                shutil.copy(original_path, new_path)
+            except Exception as e:
+                QMessageBox.critical(self, "Duplicate Failed", f"Could not copy frame:\n{e}")
+                continue
+
+            # Insert the copy after the selected frame
+            insert_at = index + 1
+            self.captured_frames.insert(insert_at, new_path)
+            self.undo_stack.append(("add", new_path))
+            self.unsaved_changes = True
+
+        self.refresh_timeline()
+        self.timeline.scrollToBottom()
 
     def closeEvent(self, event):
         if self.unsaved_changes:
