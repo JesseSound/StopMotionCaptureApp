@@ -206,6 +206,7 @@ class StopMotionApp(QWidget):
         controls = QHBoxLayout()
         controls.addWidget(self.capture_btn)
         controls.addWidget(self.delete_btn)
+        controls.addWidget(self.duplicate_btn)
         controls.addWidget(self.undo_btn)
         controls.addWidget(self.redo_btn)
         controls.addWidget(self.new_project_btn)
@@ -218,7 +219,7 @@ class StopMotionApp(QWidget):
         controls.addWidget(self.export_btn)
         controls.addWidget(self.export_gif_btn)
         controls.addWidget(self.back_to_live_btn)
-        controls.addWidget(self.duplicate_btn)
+       
 
         layout.addLayout(controls)
 
