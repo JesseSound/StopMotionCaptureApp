@@ -2,6 +2,7 @@ import sys
 import os
 import cv2
 import shutil
+import json
 
 from threading import Lock
 
@@ -94,6 +95,7 @@ class StopMotionApp(QWidget):
         self.available_cameras = [] 
        
         self.loop_playback = True
+        self.unsaved_changes = False
 
         self.camera_selector = QComboBox()
         self.capture_btn = QPushButton("Capture Frame")
@@ -413,6 +415,8 @@ class StopMotionApp(QWidget):
             return
 
         frame = self.latest_frame
+        self.unsaved_changes = True
+
         frame_name = f"frame_{len(self.captured_frames):04d}.png"
         frame_path = os.path.join(self.project_path, frame_name)
         cv2.imwrite(frame_path, frame)
@@ -426,13 +430,25 @@ class StopMotionApp(QWidget):
         selected_items = self.timeline.selectedItems()
         if not selected_items:
             return
+
+        reply = QMessageBox.question(
+            self, "Delete Frame(s)",
+            f"Are you sure you want to delete {len(selected_items)} frame(s)?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.No:
+            return
+
         for item in selected_items:
             row = self.timeline.row(item)
             path = self.captured_frames.pop(row)
             self.undo_stack.append(("delete", path, row))
             if os.path.exists(path):
                 os.remove(path)
+        self.unsaved_changes = True
         self.refresh_timeline()
+        self.resume_live_feed()
+
 
     def refresh_timeline(self):
         self.timeline.clear()
@@ -471,6 +487,8 @@ class StopMotionApp(QWidget):
 
         if action[0] == "add":
             # Undo a captured frame
+            self.unsaved_changes = True
+
             if action[1] in self.captured_frames:
                 self.captured_frames.remove(action[1])
                 if os.path.exists(action[1]):
@@ -478,6 +496,8 @@ class StopMotionApp(QWidget):
 
         elif action[0] == "delete":
             # Safely reinsert a deleted frame
+            self.unsaved_changes = True
+
             path = action[1]
             index = action[2]
             if 0 <= index <= len(self.captured_frames):  # insert at end is allowed
@@ -546,6 +566,15 @@ class StopMotionApp(QWidget):
     
 
     def new_project(self):
+        if self.unsaved_changes:
+            reply = QMessageBox.question(
+                self, "Unsaved Changes",
+                "You have unsaved changes. Do you want to continue and lose them?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+
         folder = QFileDialog.getExistingDirectory(self, "Create New Project Folder")
         if folder:
             self.project_path = folder
@@ -553,12 +582,12 @@ class StopMotionApp(QWidget):
             self.undo_stack.clear()
             self.redo_stack.clear()
             self.refresh_timeline()
+            self.unsaved_changes = False
             undo_cache = os.path.join(folder, ".undo_cache")
             if os.path.exists(undo_cache):
                 shutil.rmtree(undo_cache)
             os.makedirs(undo_cache)
             self.open_camera(self.current_camera_index)
-
 
 
     def toggle_loop(self, state):
@@ -594,7 +623,10 @@ class StopMotionApp(QWidget):
             undo_folder = os.path.join(self.project_path, ".undo_cache")
             if os.path.exists(undo_folder):
                 shutil.rmtree(undo_folder)
+            self.save_metadata()  # Save settings here
             QMessageBox.information(self, "Project Saved", f"Project saved in: {self.project_path}")
+            self.unsaved_changes = False
+
 
     def open_project(self):
         folder = QFileDialog.getExistingDirectory(self, "Open Project Folder")
@@ -605,6 +637,7 @@ class StopMotionApp(QWidget):
                 if file.endswith(".png") and file.startswith("frame_"):
                     self.captured_frames.append(os.path.join(folder, file))
             self.refresh_timeline()
+            self.load_metadata()
     def change_camera(self, index):
         selected_index = self.camera_selector.itemData(index)
         if selected_index is not None:
@@ -694,8 +727,55 @@ class StopMotionApp(QWidget):
         else:
             QMessageBox.information(self, "Export Complete", f"GIF animation saved to:\n{save_path}")
 
+    def save_metadata(self):
+        if not self.project_path:
+            return
+
+        metadata = {
+            "fps": self.fps_spin.value(),
+            "onion_opacity": self.opacity_slider.value(),
+            "onion_layers": self.onion_layer_spin.value(),
+            "loop_playback": self.loop_checkbox.isChecked()
+        }
+
+        meta_path = os.path.join(self.project_path, "project_meta.json")
+        try:
+            with open(meta_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+        except Exception as e:
+            print(f"Failed to save metadata: {e}")
+
+    def load_metadata(self):
+        if not self.project_path:
+            return
+
+        meta_path = os.path.join(self.project_path, "project_meta.json")
+        if not os.path.exists(meta_path):
+            return
+
+        try:
+            with open(meta_path, "r") as f:
+                metadata = json.load(f)
+
+            self.fps_spin.setValue(metadata.get("fps", 12))
+            self.opacity_slider.setValue(metadata.get("onion_opacity", 50))
+            self.onion_layer_spin.setValue(metadata.get("onion_layers", 3))
+            self.loop_checkbox.setChecked(metadata.get("loop_playback", True))
+
+        except Exception as e:
+            print(f"Failed to load metadata: {e}")
 
     def closeEvent(self, event):
+        if self.unsaved_changes:
+            reply = QMessageBox.question(
+                self, "Unsaved Changes",
+                "You have unsaved changes. Are you sure you want to quit?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                event.ignore()
+                return
+
         print("Closing app...")
 
         if self.camera_open_thread:
