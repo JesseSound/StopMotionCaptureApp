@@ -256,7 +256,9 @@ class StopMotionApp(QWidget):
         self.playback_index = 0
         QTimer.singleShot(500, self.start_camera_search)  # Wait 100ms to allow UI to show first
 
-       
+        self.camera_reconnect_attempts = 0
+        self.max_camera_reconnects = 3
+
 
         QShortcut(QKeySequence("Ctrl+Z"), self).activated.connect(self.undo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self).activated.connect(self.redo)
@@ -358,6 +360,7 @@ class StopMotionApp(QWidget):
 
             self.capture_btn.setEnabled(True)
             self.current_camera_index = index
+            self.camera_reconnect_attempts = 0
 
             # Stop playback timer if running, sync UI
             if self.playback_timer.isActive():
@@ -389,24 +392,29 @@ class StopMotionApp(QWidget):
             print("Warning: Expected image data but got something else")
 
 
-
     def update_frame(self):
         if self.is_playback_mode:
             return  # Don't update live feed while playing back
 
+        # Ensure reconnect tracking attributes exist
+        if not hasattr(self, "camera_reconnect_attempts"):
+            self.camera_reconnect_attempts = 0
+        if not hasattr(self, "max_camera_reconnects"):
+            self.max_camera_reconnects = 5
+
         with self.cap_lock:
-            if not self.cap:
+            if not self.cap or not self.cap.isOpened():
+                self.handle_camera_disconnected()
                 return
 
             ret, frame = self.cap.read()
             if not ret or frame is None:
                 print("Frame read failed.")
                 self.camera_reconnect_attempts += 1
-
-                with self.cap_lock:
-                    if self.cap:
-                        self.cap.release()
-                        self.cap = None
+                self.handle_camera_disconnected()
+                if self.cap:
+                    self.cap.release()
+                    self.cap = None
 
                 self.video_label.setText("Camera disconnected")
                 self.video_label.setAlignment(Qt.AlignCenter)
@@ -421,6 +429,7 @@ class StopMotionApp(QWidget):
                 return
 
             self.latest_frame = frame.copy()
+            self.camera_reconnect_attempts = 0  # Reset on successful read
 
         # Now that we're outside the lock, process the frame
         if self.onion_checkbox.isChecked() and self.captured_frames:
@@ -451,6 +460,15 @@ class StopMotionApp(QWidget):
             else:
                 # Open camera asynchronously
                 self.open_camera(self.current_camera_index)
+    def handle_camera_disconnected(self):
+        with self.cap_lock:
+            if self.cap:
+                self.cap.release()
+                self.cap = None
+
+        self.video_label.setText("Camera disconnected")
+        self.video_label.setAlignment(Qt.AlignCenter)
+        self.capture_btn.setEnabled(False)
 
 
 
