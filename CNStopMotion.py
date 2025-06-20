@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QComboBox, QCheckBox
 )
 from PySide6.QtGui import QPixmap, QImage, QIcon, QKeySequence, QShortcut
-from PySide6.QtCore import Qt, QTimer, QThread, Signal
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize
 
 
 # 1) Camera search dialog popup
@@ -110,6 +110,16 @@ class StopMotionApp(QWidget):
         self.timeline = QListWidget()
         self.timeline.setFixedHeight(100)
         self.timeline.itemClicked.connect(self.preview_selected_frame)
+        self.timeline.setViewMode(QListWidget.IconMode)
+        self.timeline.setMovement(QListWidget.Static)
+        self.timeline.setSpacing(5)
+        self.timeline.setIconSize(QSize(100, 80))  # optional: fixed icon size
+        self.timeline.setFlow(QListWidget.LeftToRight)
+        self.timeline.setResizeMode(QListWidget.Adjust)
+        self.timeline.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.timeline.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.timeline.setWrapping(False)
+
 
         self.capture_btn.clicked.connect(self.capture_frame)
         self.capture_btn.setToolTip("Take a snapshot from the live feed")
@@ -423,6 +433,8 @@ class StopMotionApp(QWidget):
         self.captured_frames.append(frame_path)
         self.undo_stack.append(("add", frame_path))
         self.refresh_timeline()
+        self.timeline.scrollToBottom()
+
 
 
 
@@ -452,29 +464,29 @@ class StopMotionApp(QWidget):
 
     def refresh_timeline(self):
         self.timeline.clear()
+        icon_size = 80
+
         for idx, frame_path in enumerate(self.captured_frames):
-            item = QListWidgetItem()
-            
-            # Load the image for thumbnail and data storage
             frame = cv2.imread(frame_path)
             if frame is None:
-                continue  # Skip if image failed to load
-            
-            # Convert to Qt image for thumbnail
-            height, width, channel = frame.shape
-            bytes_per_line = 3 * width
-            q_img = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
-            if not q_img.isNull():
-                thumb = QPixmap.fromImage(q_img).scaledToHeight(80)
-                item.setIcon(QIcon(thumb))
+                continue
 
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = frame.shape
+            bytes_per_line = ch * w
+            q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
 
-            item.setIcon(QIcon(thumb))
-            item.setText(f"Frame {idx}")
+            if q_img.isNull():
+                continue
+
+            thumb = QPixmap.fromImage(q_img).scaledToHeight(icon_size, Qt.SmoothTransformation)
+
+            item = QListWidgetItem(QIcon(thumb), f"{idx}")
             item.setData(Qt.UserRole, frame_path)
-
+            item.setSizeHint(QSize(icon_size + 10, icon_size + 20))  # ensure space for label
 
             self.timeline.addItem(item)
+
 
 
 
@@ -574,8 +586,16 @@ class StopMotionApp(QWidget):
             )
             if reply == QMessageBox.No:
                 return
+        self.timer.stop()
+        self.autosave_timer.stop()
 
-        folder = QFileDialog.getExistingDirectory(self, "Create New Project Folder")
+        options = QFileDialog.Options()
+        options |= QFileDialog.DontUseNativeDialog
+        folder = QFileDialog.getExistingDirectory(self, "Create New Project Folder", options=options)
+
+        self.timer.start(30)
+        self.autosave_timer.start(300_000)
+
         if folder:
             self.project_path = folder
             self.captured_frames.clear()
