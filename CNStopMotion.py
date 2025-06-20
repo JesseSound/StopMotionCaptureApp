@@ -87,7 +87,7 @@ class StopMotionApp(QWidget):
         self.undo_stack = []
         self.redo_stack = []
         self.camera_search_thread = None
-        
+        self.is_playback_mode = False   
         self.current_camera_index = 0
         self.cap = None
         self.camera_open_thread = None
@@ -274,16 +274,17 @@ class StopMotionApp(QWidget):
 
                 self.open_camera(cameras[0])
 
+
     def open_camera(self, index):
         with self.cap_lock:
             if self.cap:
                 self.cap.release()
                 self.cap = None
 
+        # Instead of forcibly quitting and waiting, just skip starting a new thread if one is running
         if self.camera_open_thread and self.camera_open_thread.isRunning():
-            self.camera_open_thread.quit()
-            self.camera_open_thread.wait()
-            self.camera_open_thread = None
+            print("Camera open thread still running, ignoring open request")
+            return
 
         self.camera_selector.setEnabled(False)
         self.capture_btn.setEnabled(False)
@@ -303,15 +304,26 @@ class StopMotionApp(QWidget):
             self.camera_open_thread = None
 
 
+
     def on_camera_opened(self, success, index, cap):
         self.camera_selector.setEnabled(True)
         if success and cap:
             with self.cap_lock:
+                if self.cap:
+                    self.cap.release()
                 self.cap = cap
+
             self.capture_btn.setEnabled(True)
             self.current_camera_index = index
+
+            # Stop playback timer if running, sync UI
+            if self.playback_timer.isActive():
+                self.playback_timer.stop()
+                self.play_pause_btn.setChecked(False)
+
             if not self.timer.isActive():
                 self.timer.start(30)
+
         else:
             if index == 0:
                 self.start_camera_search()
@@ -319,7 +331,6 @@ class StopMotionApp(QWidget):
                 QMessageBox.warning(self, "Camera Error", f"Failed to open camera {index}")
             self.capture_btn.setEnabled(False)
 
-        #self.camera_open_thread = None
     def preview_selected_frame(self, item):
         self.timer.stop()
         frame_path = item.data(Qt.UserRole)
@@ -337,6 +348,16 @@ class StopMotionApp(QWidget):
 
 
     def update_frame(self):
+        if self.is_playback_mode:
+            return  # Don't update live feed while playing back
+        with self.cap_lock:
+            if not self.cap:
+                return
+
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                print("Frame read failed, resuming live feed...")
+                return
         with self.cap_lock:
             if not self.cap:
                 return
@@ -366,10 +387,21 @@ class StopMotionApp(QWidget):
             self.video_label.setPixmap(pix)
 
     def resume_live_feed(self):
-        if self.cap is None or not self.cap.isOpened():
-            self.open_camera(self.current_camera_index)
-        elif not self.timer.isActive():
-            self.timer.start(30)
+        # Stop playback timer if running
+        if self.playback_timer.isActive():
+            self.playback_timer.stop()
+            self.play_pause_btn.setChecked(False)  # keep UI synced
+
+        with self.cap_lock:
+            if self.cap and self.cap.isOpened():
+                # Start live feed timer if not running
+                if not self.timer.isActive():
+                    self.timer.start(30)
+            else:
+                # Open camera asynchronously
+                self.open_camera(self.current_camera_index)
+
+
 
     def capture_frame(self):
         if self.latest_frame is None:
@@ -582,34 +614,13 @@ class StopMotionApp(QWidget):
     def play_pause_toggle(self, checked):
         if checked:
             self.play_pause_btn.setText("Pause")
-
-            with self.cap_lock:
-                if self.cap:
-                    self.cap.release()
-                    self.cap = None
-
-
-            if not self.captured_frames:
-                QMessageBox.warning(self, "Playback", "No frames to play.")
-                self.play_pause_btn.setChecked(False)
-                return
-
+            self.is_playback_mode = True
             self.playback_index = 0
-            
-            if self.playback_index >= len(self.captured_frames):
-                self.play_pause_btn.setChecked(False)
-                return
-
             self.playback_timer.start(int(1000 / self.fps_spin.value()))
-
         else:
             self.play_pause_btn.setText("Play")
+            self.is_playback_mode = False
             self.playback_timer.stop()
-
-            # Restart live camera feed when playback stops
-            if self.current_camera_index is not None:
-                self.open_camera(self.current_camera_index)
-
 
 
     def export_mp4(self):
