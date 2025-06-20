@@ -200,7 +200,10 @@ class StopMotionApp(QWidget):
         camera_layout.addWidget(QLabel("Select Camera:"))
         camera_layout.addWidget(self.camera_selector)
         layout.addLayout(camera_layout)
-
+        self.rescan_btn = QPushButton("Rescan")
+        self.rescan_btn.setToolTip("Refresh camera list in case of disconnection")
+        self.rescan_btn.clicked.connect(self.start_camera_search)
+        camera_layout.addWidget(self.rescan_btn)
         layout.addWidget(self.video_label)
 
         controls = QHBoxLayout()
@@ -259,6 +262,8 @@ class StopMotionApp(QWidget):
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self).activated.connect(self.redo)
    
     def start_camera_search(self):
+        self.rescan_btn.setEnabled(False)
+
         # Avoid starting if thread is still running
         if self.camera_search_thread and self.camera_search_thread.isRunning():
             return
@@ -276,6 +281,7 @@ class StopMotionApp(QWidget):
 
 
     def cleanup_camera_search_thread(self):
+        self.rescan_btn.setEnabled(True)
         if self.camera_search_thread:
             self.camera_search_thread.deleteLater()
             self.camera_search_thread = None
@@ -394,10 +400,24 @@ class StopMotionApp(QWidget):
 
             ret, frame = self.cap.read()
             if not ret or frame is None:
-                print("Frame read failed, resuming live feed...")
-                self.cap.release()
-                self.cap = None
-                QTimer.singleShot(1000, self.resume_live_feed)
+                print("Frame read failed.")
+                self.camera_reconnect_attempts += 1
+
+                with self.cap_lock:
+                    if self.cap:
+                        self.cap.release()
+                        self.cap = None
+
+                self.video_label.setText("Camera disconnected")
+                self.video_label.setAlignment(Qt.AlignCenter)
+                self.capture_btn.setEnabled(False)
+
+                if self.camera_reconnect_attempts < self.max_camera_reconnects:
+                    QTimer.singleShot(1000, self.resume_live_feed)
+                else:
+                    print("Max reconnect attempts reached. Starting full camera rescan.")
+                    self.camera_reconnect_attempts = 0
+                    QTimer.singleShot(1000, self.start_camera_search)
                 return
 
             self.latest_frame = frame.copy()
