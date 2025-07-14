@@ -41,40 +41,25 @@ class CameraSearchThread(QThread):
 
     def run(self):
         found_cameras = []
-        for i in range(5):  
+        for i in range(3):  
             cap = cv2.VideoCapture(i)
             if cap.isOpened():
                 found_cameras.append(i)
-                cap.release()
-            else:
-                # Stop searching on first failure
-                break
+            cap.release()
         self.cameras_found.emit(found_cameras)
 class CameraOpenThread(QThread):
-    # In CameraOpenThread
-    camera_opened = Signal(bool, int, object)  # success, index, cap
-  # success flag, camera index
+    camera_opened = Signal(bool, int)  # success, index
 
     def __init__(self, index):
         super().__init__()
         self.index = index
-        self.cap = None
 
     def run(self):
         cap = cv2.VideoCapture(self.index)
         success = cap.isOpened()
+        cap.release()
+        self.camera_opened.emit(success, self.index)
 
-        if not success:
-            cap.release()
-            cap = None
-
-        self.cap = cap
-        self.camera_opened.emit(success, self.index, cap if success else None)
-
-        # Only release if it failed
-        if not success and self.cap:
-            self.cap.release()
-            self.cap = None
 
 class ProjectLoadingDialog(QWidget):
     def __init__(self, parent=None):
@@ -269,6 +254,8 @@ class StopMotionApp(QWidget):
         # Avoid starting if thread is still running
         if self.camera_search_thread and self.camera_search_thread.isRunning():
             return
+        if self.camera_search_dialog:
+          self.camera_search_dialog.close()
 
         self.camera_search_dialog = CameraSearchDialog(self)
         self.camera_search_dialog.show()
@@ -284,9 +271,11 @@ class StopMotionApp(QWidget):
 
     def cleanup_camera_search_thread(self):
         self.rescan_btn.setEnabled(True)
-        if self.camera_search_thread:
-            self.camera_search_thread.deleteLater()
-            self.camera_search_thread = None
+        thread = self.camera_search_thread
+        self.camera_search_thread = None
+        if thread:
+            thread.deleteLater()
+
 
 
     def on_cameras_found(self, cameras):
@@ -314,6 +303,10 @@ class StopMotionApp(QWidget):
 
 
     def open_camera(self, index):
+        if index not in self.available_cameras:
+            print(f"Camera index {index} not in available list")
+            return
+
         with self.cap_lock:
             if self.cap and self.cap.isOpened() and self.current_camera_index == index:
                 print("Camera already open and matches requested index.")
@@ -346,17 +339,17 @@ class StopMotionApp(QWidget):
 
 
 
-    def on_camera_opened(self, success, index, cap):
+    def on_camera_opened(self, success, index):
         self.camera_selector.setEnabled(True)
         if self.project_loading_dialog:
             self.project_loading_dialog.close()
             self.project_loading_dialog = None
 
-        if success and cap:
+        if success:
             with self.cap_lock:
                 if self.cap:
                     self.cap.release()
-                self.cap = cap
+                self.cap = cv2.VideoCapture(index)  # Open here in main thread
 
             self.capture_btn.setEnabled(True)
             self.current_camera_index = index
@@ -402,13 +395,18 @@ class StopMotionApp(QWidget):
         if not hasattr(self, "max_camera_reconnects"):
             self.max_camera_reconnects = 5
 
+        # Ensure UI elements exist
+        if not hasattr(self, 'onion_checkbox') or not self.video_label:
+            print("UI not fully initialized yet.")
+            return
+
         with self.cap_lock:
             if not self.cap or not self.cap.isOpened():
                 self.handle_camera_disconnected()
                 return
 
             ret, frame = self.cap.read()
-            if not ret or frame is None:
+            if not ret or frame is None or frame.size == 0:
                 print("Frame read failed.")
                 self.camera_reconnect_attempts += 1
                 self.handle_camera_disconnected()
@@ -428,23 +426,27 @@ class StopMotionApp(QWidget):
                     QTimer.singleShot(1000, self.start_camera_search)
                 return
 
-            self.latest_frame = frame.copy()
-            self.camera_reconnect_attempts = 0  # Reset on successful read
+            self.latest_frame = frame.copy() if frame is not None else None
+            self.camera_reconnect_attempts = 0  # Reset on success
 
-        # Now that we're outside the lock, process the frame
+        # Outside lock, update GUI
         if self.onion_checkbox.isChecked() and self.captured_frames:
             self.update_onion_skin()
         else:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = frame.shape
-            bytes_per_line = ch * w
-            qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            pix = QPixmap.fromImage(qt_image).scaled(
-                self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio
-            )
-            self.video_label.setPixmap(pix)
-            if self.video_label.text():
-                self.video_label.setText("")
+            try:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = frame.shape
+                bytes_per_line = ch * w
+                qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                pix = QPixmap.fromImage(qt_image).scaled(
+                    self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio
+                )
+                self.video_label.setPixmap(pix)
+                if self.video_label.text():
+                    self.video_label.setText("")
+            except cv2.error as e:
+                print(f"cv2 error during frame processing: {e}")
+
 
     def resume_live_feed(self):
         # Stop playback timer if running
@@ -462,14 +464,22 @@ class StopMotionApp(QWidget):
                 self.open_camera(self.current_camera_index)
     def handle_camera_disconnected(self):
         with self.cap_lock:
-            if self.cap:
-                self.cap.release()
-                self.cap = None
+            if not self.cap:
+                return  # Already disconnected
+            self.cap.release()
+            self.cap = None
+
+        if self.timer.isActive():
+            self.timer.stop()
 
         self.video_label.setText("Camera disconnected")
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.capture_btn.setEnabled(False)
 
+        self.capture_btn.setEnabled(False)
+        self.play_pause_btn.setChecked(False)
+        self.play_pause_btn.setEnabled(False)
+
+        print("Camera has been disconnected")
 
 
     def capture_frame(self):
@@ -696,23 +706,35 @@ class StopMotionApp(QWidget):
             self.playback_timer.stop()
             return
 
-        if self.playback_index >= len(self.captured_frames):
-            if self.loop_playback:
-                self.playback_index = 0
+        checked = 0
+        while checked < len(self.captured_frames):
+            frame_path = self.captured_frames[self.playback_index]
+            if os.path.exists(frame_path):
+                pixmap = QPixmap(frame_path)
+                if not pixmap.isNull():
+                    pixmap = pixmap.scaled(self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio)
+                    self.video_label.setPixmap(pixmap)
+                    self.playback_index += 1
+                    return
+                else:
+                    print(f"Invalid or unreadable image: {frame_path}")
             else:
-                self.play_pause_btn.setChecked(False)
-                self.playback_timer.stop()
-                return
+                print(f"Frame path does not exist: {frame_path}")
 
-        frame_path = self.captured_frames[self.playback_index]
-        if not os.path.exists(frame_path):
-            print(f"Frame path does not exist: {frame_path}")
             self.playback_index += 1
-            return
+            if self.playback_index >= len(self.captured_frames):
+                if self.loop_playback:
+                    self.playback_index = 0
+                else:
+                    self.play_pause_btn.setChecked(False)
+                    self.playback_timer.stop()
+                    return
+            checked += 1
 
-        pixmap = QPixmap(frame_path).scaled(self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio)
-        self.video_label.setPixmap(pixmap)
-        self.playback_index += 1
+        print("No valid frames to play.")
+        self.play_pause_btn.setChecked(False)
+        self.playback_timer.stop()
+
 
 
     def save_project(self):
@@ -882,13 +904,27 @@ class StopMotionApp(QWidget):
             with open(meta_path, "r") as f:
                 metadata = json.load(f)
 
-            self.fps_spin.setValue(metadata.get("fps", 12))
-            self.opacity_slider.setValue(metadata.get("onion_opacity", 50))
-            self.onion_layer_spin.setValue(metadata.get("onion_layers", 3))
-            self.loop_checkbox.setChecked(metadata.get("loop_playback", True))
+            fps = metadata.get("fps", 12)
+            if isinstance(fps, int) and 1 <= fps <= 60:
+                self.fps_spin.setValue(fps)
 
+            opacity = metadata.get("onion_opacity", 50)
+            if isinstance(opacity, int) and 0 <= opacity <= 100:
+                self.opacity_slider.setValue(opacity)
+
+            layers = metadata.get("onion_layers", 3)
+            if isinstance(layers, int) and 1 <= layers <= 10:
+                self.onion_layer_spin.setValue(layers)
+
+            loop = metadata.get("loop_playback", True)
+            if isinstance(loop, bool):
+                self.loop_checkbox.setChecked(loop)
+
+        except json.JSONDecodeError as e:
+            print(f"JSON decoding failed: {e}")
         except Exception as e:
             print(f"Failed to load metadata: {e}")
+
     def duplicate_frame(self):
         selected_items = self.timeline.selectedItems()
         if not selected_items:
