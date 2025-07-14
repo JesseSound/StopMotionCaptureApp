@@ -22,13 +22,7 @@ from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize
 
 from pygrabber.dshow_graph import FilterGraph
 
-class CameraSearchThread(QThread):
-    cameras_found = Signal(list)
 
-    def run(self):
-        graph = FilterGraph()
-        device_names = graph.get_input_devices()
-        self.cameras_found.emit(device_names)
 
 # 1) Camera search dialog popup
 class CameraSearchDialog(QWidget):
@@ -44,21 +38,22 @@ class CameraSearchDialog(QWidget):
         layout.addWidget(label)
         self.setLayout(layout)
 
-# 2) Camera search thread (non-blocking)
 class CameraSearchThread(QThread):
-    cameras_found = Signal(list)
+    cameras_found = Signal(list)  # Will emit list of (index, name) tuples
 
     def run(self):
+        graph = FilterGraph()
+        device_names = graph.get_input_devices()
         found_cameras = []
-        for i in range(5):  
+
+        for i, name in enumerate(device_names):
             cap = cv2.VideoCapture(i)
             if cap.isOpened():
-                found_cameras.append(i)
+                found_cameras.append((i, name))
                 cap.release()
-            else:
-                # Stop searching on first failure
-                break
+
         self.cameras_found.emit(found_cameras)
+
 class CameraOpenThread(QThread):
     # In CameraOpenThread
     camera_opened = Signal(bool, int, object)  # success, index, cap
@@ -292,27 +287,26 @@ class StopMotionApp(QWidget):
 
 
     def on_cameras_found(self, cameras):
+        # cameras = list of (index, name) tuples
+
         if self.camera_search_dialog:
             self.camera_search_dialog.close()
             self.camera_search_dialog = None
 
-        # Update combo box only with cameras excluding current opened (if any)
-        self.available_cameras = cameras
+        self.available_cameras = [index for index, name in cameras]
         self.camera_selector.clear()
+
+        for index, name in cameras:
+            self.camera_selector.addItem(name, index)
 
         if not cameras:
             self.camera_selector.addItem("No Camera Found")
             self.capture_btn.setEnabled(False)
             QMessageBox.warning(self, "No Cameras", "No cameras were found.")
         else:
-            for idx in cameras:
-                self.camera_selector.addItem(f"Camera {idx}", idx)
-
-            # If no camera was opened earlier or current cam not in list, open first found
-            if self.cap is None or self.current_camera_index not in cameras:
-                self.current_camera_index = cameras[0]
-
-                self.open_camera(cameras[0])
+            if self.cap is None or self.current_camera_index not in self.available_cameras:
+                self.current_camera_index = cameras[0][0]  # first index
+                self.open_camera(self.current_camera_index)
 
 
     def open_camera(self, index):
@@ -320,7 +314,7 @@ class StopMotionApp(QWidget):
             if self.cap and self.cap.isOpened() and self.current_camera_index == index:
                 print("Camera already open and matches requested index.")
                 return
-
+        self.current_camera_index = index 
         # Instead of forcibly quitting and waiting, just skip starting a new thread if one is running
         if self.camera_open_thread and self.camera_open_thread.isRunning():
             print("Camera open thread still running, ignoring open request")
@@ -795,9 +789,10 @@ class StopMotionApp(QWidget):
 
     def change_camera(self, index):
         if index < 0:
-            return  # Invalid selection
+            return
 
         selected_index = self.camera_selector.itemData(index)
+        print(f"Dropdown index {index} selected. Camera index: {selected_index}")
 
         if selected_index is None:
             print("No camera index associated with selected item.")
@@ -807,9 +802,8 @@ class StopMotionApp(QWidget):
             print("Selected camera is already active.")
             return
 
-        print(f"Switching to camera index: {selected_index}")
-        self.current_camera_index = selected_index
         self.open_camera(selected_index)
+
 
 
     def play_pause_toggle(self, checked):
