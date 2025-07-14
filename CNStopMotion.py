@@ -99,6 +99,7 @@ class StopMotionApp(QWidget):
         self.captured_frames = []
         self.undo_stack = []
         self.redo_stack = []
+        self.undo_cache = {} 
         self.camera_search_thread = None
         self.is_playback_mode = False   
         self.current_camera_index = 0
@@ -474,31 +475,26 @@ class StopMotionApp(QWidget):
         if reply == QMessageBox.No:
             return
 
-        undo_cache_dir = os.path.join(self.project_path, ".undo_cache")
-        os.makedirs(undo_cache_dir, exist_ok=True)
-
         for item in selected_items:
             row = self.timeline.row(item)
             path = self.captured_frames.pop(row)
 
+            # Cache the file contents before deleting
+            try:
+                with open(path, "rb") as f:
+                    self.undo_cache[path] = f.read()
+            except Exception as e:
+                print(f"Failed to cache file {path} for undo: {e}")
+
+            # Delete the actual file
             if os.path.exists(path):
-                filename = os.path.basename(path)
-                backup_path = os.path.join(undo_cache_dir, filename)
-                try:
-                    shutil.move(path, backup_path)
-                except Exception as e:
-                    print(f"Failed to move {path} to undo cache: {e}")
-                    # If move failed, put back the path into captured_frames
-                    self.captured_frames.insert(row, path)
-                    continue
-            else:
-                backup_path = path  # File already missing, but keep undo info
+                os.remove(path)
 
-            self.undo_stack.append(("delete", backup_path, row))
-
+            self.undo_stack.append(("delete", path, row))
         self.unsaved_changes = True
         self.refresh_timeline()
         self.resume_live_feed()
+
 
 
     def refresh_timeline(self):
@@ -548,32 +544,32 @@ class StopMotionApp(QWidget):
         self.redo_stack.append(action)
 
         if action[0] == "add":
-            # Undo adding a frame: remove file & path
+            # Undo adding a frame: remove it & delete file
+            path = action[1]
             self.unsaved_changes = True
-            if action[1] in self.captured_frames:
-                self.captured_frames.remove(action[1])
-                if os.path.exists(action[1]):
-                    os.remove(action[1])
+            if path in self.captured_frames:
+                self.captured_frames.remove(path)
+                if os.path.exists(path):
+                    os.remove(path)
 
         elif action[0] == "delete":
+            # Undo deleting a frame: restore file and reinsert path
             path = action[1]
             index = action[2]
+            self.unsaved_changes = True
 
-            # Move file back from undo cache to project folder
-            filename = os.path.basename(path)
-            original_path = os.path.join(self.project_path, filename)
-
-            if os.path.exists(path):
+            # Restore file from undo_cache if present
+            if path in self.undo_cache:
                 try:
-                    shutil.move(path, original_path)
+                    with open(path, "wb") as f:
+                        f.write(self.undo_cache[path])
                 except Exception as e:
-                    print(f"Failed to restore {path} during undo: {e}")
-                    original_path = path  # fallback to backup path if move fails
+                    print(f"Failed to restore file {path} on undo: {e}")
+            else:
+                print(f"No cached data for {path} to restore on undo")
 
             if 0 <= index <= len(self.captured_frames):
-                self.captured_frames.insert(index, original_path)
-
-            self.unsaved_changes = True
+                self.captured_frames.insert(index, path)
 
         self.refresh_timeline()
 
@@ -586,30 +582,22 @@ class StopMotionApp(QWidget):
         self.undo_stack.append(action)
 
         if action[0] == "add":
-            # Redo adding frame: just add path back
-            self.captured_frames.append(action[1])
+            path = action[1]
+            self.captured_frames.append(path)
 
         elif action[0] == "delete":
             path = action[1]
-
             if path in self.captured_frames:
                 self.captured_frames.remove(path)
 
-            # Move file back to undo cache to simulate deletion again
-            undo_cache_dir = os.path.join(self.project_path, ".undo_cache")
-            os.makedirs(undo_cache_dir, exist_ok=True)
+            # # Delete file again and clear cache
+            # if os.path.exists(path):
+            #     os.remove(path)
 
-            filename = os.path.basename(path)
-            backup_path = os.path.join(undo_cache_dir, filename)
-
-            if os.path.exists(path):
-                try:
-                    shutil.move(path, backup_path)
-                except Exception as e:
-                    print(f"Failed to move {path} back to undo cache during redo: {e}")
+            # if path in self.undo_cache:
+            #     del self.undo_cache[path]
 
         self.refresh_timeline()
-
 
     def update_onion_skin(self):
         frame = self.latest_frame
@@ -679,13 +667,21 @@ class StopMotionApp(QWidget):
             self.captured_frames.clear()
             self.undo_stack.clear()
             self.redo_stack.clear()
+
+            # Clear the in-memory cache
+            if hasattr(self, "undo_cache"):
+                self.undo_cache.clear()
+            else:
+                self.undo_cache = {}
+
             self.refresh_timeline()
             self.unsaved_changes = False
 
-            undo_cache = os.path.join(folder, ".undo_cache")
-            if os.path.exists(undo_cache):
-                shutil.rmtree(undo_cache)
-            os.makedirs(undo_cache)
+            # Ensure the .undo_cache folder is reset
+            undo_cache_path = os.path.join(folder, ".undo_cache")
+            if os.path.exists(undo_cache_path):
+                shutil.rmtree(undo_cache_path)
+            os.makedirs(undo_cache_path)
 
             self.open_camera(self.current_camera_index)
 
@@ -755,6 +751,7 @@ class StopMotionApp(QWidget):
             self.captured_frames = []
             self.undo_stack.clear()
             self.redo_stack.clear()
+            self.undo_cache.clear()
             self.unsaved_changes = False
 
             # Create or clear undo cache folder
