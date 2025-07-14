@@ -20,6 +20,15 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPixmap, QImage, QIcon, QKeySequence, QShortcut
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize
 
+from pygrabber.dshow_graph import FilterGraph
+
+class CameraSearchThread(QThread):
+    cameras_found = Signal(list)
+
+    def run(self):
+        graph = FilterGraph()
+        device_names = graph.get_input_devices()
+        self.cameras_found.emit(device_names)
 
 # 1) Camera search dialog popup
 class CameraSearchDialog(QWidget):
@@ -785,10 +794,23 @@ class StopMotionApp(QWidget):
 
 
     def change_camera(self, index):
+        if index < 0:
+            return  # Invalid selection
+
         selected_index = self.camera_selector.itemData(index)
-        if selected_index is not None:
-            self.current_camera_index = selected_index
-            self.open_camera(self.current_camera_index)
+
+        if selected_index is None:
+            print("No camera index associated with selected item.")
+            return
+
+        if selected_index == self.current_camera_index:
+            print("Selected camera is already active.")
+            return
+
+        print(f"Switching to camera index: {selected_index}")
+        self.current_camera_index = selected_index
+        self.open_camera(selected_index)
+
 
     def play_pause_toggle(self, checked):
         if checked:
