@@ -112,6 +112,7 @@ class StopMotionApp(QWidget):
         self.available_cameras = [] 
        
         self.loop_playback = True
+        self.gif_loop_value = 0 if self.loop_playback else 1
         self.unsaved_changes = False
 
         self.camera_selector = QComboBox()
@@ -822,26 +823,45 @@ class StopMotionApp(QWidget):
         if not self.captured_frames:
             QMessageBox.warning(self, "Export Error", "No frames to export!")
             return
-        import imageio
+
+
         save_path, _ = QFileDialog.getSaveFileName(self, "Save MP4 Video", "", "MP4 files (*.mp4)")
         if not save_path:
             return
 
+        # Ensure file has correct extension
+        if not save_path.lower().endswith('.mp4'):
+            save_path += '.mp4'
+
         fps = self.fps_spin.value()
+
+        # Read the first frame to determine size
         first_frame = cv2.imread(self.captured_frames[0])
         if first_frame is None:
             QMessageBox.warning(self, "Export Error", "Failed to read first frame!")
             return
 
         height, width, _ = first_frame.shape
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+        # Create video writer with correct parameters
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or try 'avc1' or 'H264' if issues persist
         video_writer = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
 
-        for frame_path in self.captured_frames:
-            frame = cv2.imread(frame_path, cv2.IMREAD_REDUCED_COLOR_2)
+        if not video_writer.isOpened():
+            QMessageBox.critical(self, "Export Error", "Failed to open video writer!")
+            return
 
-            if frame is not None:
-                video_writer.write(frame)
+        for frame_path in self.captured_frames:
+            frame = cv2.imread(frame_path)
+            if frame is None:
+                continue
+
+            # Ensure consistent frame size
+            if frame.shape[1] != width or frame.shape[0] != height:
+                frame = cv2.resize(frame, (width, height))
+
+            video_writer.write(frame)
+
         video_writer.release()
 
         QMessageBox.information(self, "Export Complete", f"MP4 video saved to:\n{save_path}")
@@ -851,7 +871,8 @@ class StopMotionApp(QWidget):
             QMessageBox.warning(self, "Export Error", "No frames to export!")
             return
 
-        import imageio
+        import imageio.v2 as imageio
+
 
         save_path, _ = QFileDialog.getSaveFileName(self, "Save GIF Animation", "", "GIF files (*.gif)")
         if not save_path:
@@ -875,7 +896,7 @@ class StopMotionApp(QWidget):
             return
 
         try:
-            imageio.mimsave(save_path, images, duration=duration)
+            imageio.mimsave(save_path, images, duration=duration, loop = self.gif_loop_value)
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", f"Could not save GIF:\n{e}")
             return
