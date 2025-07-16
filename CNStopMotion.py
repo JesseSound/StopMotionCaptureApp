@@ -15,7 +15,7 @@ import numpy as np
 from PySide6.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QListWidget,
     QFileDialog, QHBoxLayout, QSlider, QMessageBox, QListWidgetItem,
-    QSpinBox, QComboBox, QCheckBox
+    QSpinBox, QComboBox, QCheckBox, QSizePolicy
 )
 from PySide6.QtGui import QPixmap, QImage, QIcon, QKeySequence, QShortcut
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize
@@ -124,7 +124,10 @@ class StopMotionApp(QWidget):
         self.cap_lock = Lock()
 
         self.video_label = QLabel()
-        self.video_label.setFixedSize(640, 480)
+
+        self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.video_label.setMinimumSize(640, 480)  # Optional, to avoid too small size
+
 
         self.timeline = QListWidget()
         self.timeline.setFixedHeight(100)
