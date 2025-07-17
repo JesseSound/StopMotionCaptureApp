@@ -342,6 +342,7 @@ class StopMotionApp(QWidget):
         QTimer.singleShot(500, self.start_camera_search)  # Wait 100ms to allow UI to show first
 
        
+        self.camera_loading_dialog = None
 
         QShortcut(QKeySequence("Ctrl+Z"), self).activated.connect(self.undo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self).activated.connect(self.redo)
@@ -437,6 +438,16 @@ class StopMotionApp(QWidget):
         self.video_label.setText("Loading camera feed... Cyber Ninja's working their hardest")
         self.video_label.setAlignment(Qt.AlignCenter)
 
+        self.camera_loading_dialog = QDialog(self)
+        self.camera_loading_dialog.setWindowTitle("Switching Camera")
+        layout = QVBoxLayout()
+        label = QLabel("Please wait... Cyber Ninjas are changing cameras.")
+        layout.addWidget(label)
+        self.camera_loading_dialog.setLayout(layout)
+        self.camera_loading_dialog.setModal(True)
+        self.camera_loading_dialog.setFixedSize(300, 100)
+        self.camera_loading_dialog.show()
+
         self.camera_open_thread = CameraOpenThread(index)
         self.camera_open_thread.camera_opened.connect(self.on_camera_opened)
         self.camera_open_thread.finished.connect(self.cleanup_camera_thread)
@@ -454,9 +465,10 @@ class StopMotionApp(QWidget):
 
     def on_camera_opened(self, success, index, cap):
         self.camera_selector.setEnabled(True)
-        if self.project_loading_dialog:
-            self.project_loading_dialog.close()
-            self.project_loading_dialog = None
+
+        if self.camera_loading_dialog:
+            self.camera_loading_dialog.close()
+            self.camera_loading_dialog = None
 
         if success and cap:
             with self.cap_lock:
@@ -465,11 +477,9 @@ class StopMotionApp(QWidget):
                 self.cap = cap
 
             self.current_camera_index = index
-            self.current_camera_name = self.available_cameras.get(index, None)  # Update name only here
-
+            self.current_camera_name = self.available_cameras.get(index, None)
             self.capture_btn.setEnabled(True)
 
-            # Stop playback if active
             if self.playback_timer.isActive():
                 self.playback_timer.stop()
                 self.play_pause_btn.setChecked(False)
