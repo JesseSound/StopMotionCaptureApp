@@ -386,7 +386,7 @@ class StopMotionApp(QWidget):
         if not cameras:
             self.camera_selector.addItem("No Camera Found")
             self.capture_btn.setEnabled(False)
-            QMessageBox.warning(self, "No Cameras", "No cameras were found.")
+            QMessageBox.warning(self, "No Cameras", "No cameras were found! Did you hide them too well?")
             self.current_camera_index = None
             self.current_camera_name = None
             self.cap = None
@@ -434,7 +434,7 @@ class StopMotionApp(QWidget):
         self.current_camera_index = index  # Set the index now, but not the name yet
         self.camera_selector.setEnabled(False)
         self.capture_btn.setEnabled(False)
-        self.video_label.setText("Loading camera feed...")
+        self.video_label.setText("Loading camera feed... Cyber Ninja's working their hardest")
         self.video_label.setAlignment(Qt.AlignCenter)
 
         self.camera_open_thread = CameraOpenThread(index)
@@ -465,7 +465,7 @@ class StopMotionApp(QWidget):
                 self.cap = cap
 
             self.current_camera_index = index
-            self.current_camera_name = self.available_cameras.get(index, None)  # ✅ Update name only here
+            self.current_camera_name = self.available_cameras.get(index, None)  # Update name only here
 
             self.capture_btn.setEnabled(True)
 
@@ -480,7 +480,7 @@ class StopMotionApp(QWidget):
             if index == 0:
                 self.start_camera_search()
             else:
-                QMessageBox.warning(self, "Camera Error", f"Failed to open camera {index}")
+                QMessageBox.warning(self, "Camera Error", f"Cyber Ninjas can't open camera {index}")
             self.capture_btn.setEnabled(False)
 
     def preview_selected_frame(self, item):
