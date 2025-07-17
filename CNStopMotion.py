@@ -317,11 +317,11 @@ class StopMotionApp(QWidget):
                 # Theme selector UI
         self.theme_label = QLabel("Theme:")
         self.theme_selector = QComboBox()
-        self.theme_selector.addItems(["Light", "Dark", "Custom", "System Default"])
+        self.theme_selector.addItems(["System Default", "Dark", "Custom", "Light"])
         self.theme_selector.currentTextChanged.connect(self.change_theme)
         camera_layout.addWidget(self.theme_label)
         camera_layout.addWidget(self.theme_selector)
-        self.theme_selector.setCurrentText("Light")
+        self.theme_selector.setCurrentText("System Default")
         self.edit_theme_btn = QPushButton("Edit Custom Theme")
         camera_layout.addWidget(self.edit_theme_btn)
         self.edit_theme_btn.clicked.connect(self.open_theme_editor)
