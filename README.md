@@ -16,7 +16,8 @@ An open-source stop motion animation app built with Python and PySide6, designed
 * **Onion Skinning:** Overlay previous frames with adjustable opacity and layers for better animation alignment.
 * **Playback Controls:** Play, pause, loop, and step through captured frames.
 * **Project Management:** Create new projects, save, and open existing projects with frame data persistence.
-* **Export:** Export your animation as MP4 video or GIF file with configurable FPS.
+* **Export as GIF or MP4:** Export your animation as MP4 video or GIF file with configurable FPS.
+* **Custom Colours for your UI** Choose Light, Dark, System Default, or choose your own colours
 * **User-friendly UI:** Simple and accessible controls for educators and kids.
 
 ---
