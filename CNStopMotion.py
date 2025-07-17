@@ -1075,7 +1075,7 @@ class StopMotionApp(QWidget):
                 json.dump(metadata, f, indent=2)
         except Exception as e:
             print(f"Failed to save metadata: {e}")
-
+            
     def load_metadata(self):
         if not self.project_path:
             return
@@ -1090,20 +1090,24 @@ class StopMotionApp(QWidget):
             self.opacity_slider.setValue(metadata.get("onion_opacity", 50))
             self.onion_layer_spin.setValue(metadata.get("onion_layers", 3))
             self.loop_checkbox.setChecked(metadata.get("loop_playback", True))
-            theme = metadata.get("theme", "Light")
-            self.custom_theme = metadata.get("custom_theme", None)
+            theme = metadata.get("theme", "System Default")
+
+           
+            self.custom_theme = metadata.get("custom_theme") or {}
+            if not isinstance(self.custom_theme, dict):
+                self.custom_theme = {}
 
             if theme in ["Light", "Dark", "Custom"]:
                 self.theme_selector.setCurrentText(theme)
             else:
                 self.theme_selector.setCurrentText("Light")
 
-            if theme == "Custom" and self.custom_theme:
+            if theme == "Custom":
                 self.change_theme("Custom")
 
         except Exception as e:
             print(f"Failed to load metadata: {e}")
-
+        
     def duplicate_frame(self):
         selected_items = self.timeline.selectedItems()
         if not selected_items:
@@ -1165,33 +1169,7 @@ class StopMotionApp(QWidget):
 
         print("No alternate working cameras available.")
     def change_theme(self, theme_name):
-        if theme_name == "Light":
-            light_stylesheet = """
-                QWidget {
-                    background-color: #f0f0f0;
-                    color: #2b2b2b;
-                }
-                QPushButton {
-                    background-color: #ddd;
-                    color: #000;
-                    border: 1px solid #aaa;
-                    padding: 4px;
-                }
-                QLabel, QCheckBox {
-                    color: #2b2b2b;
-                }
-                QComboBox {
-                    background-color: #eee;
-                    color: #000;
-                    border: 1px solid #aaa;
-                }
-                QListWidget {
-                    background-color: #ffffff;
-                    color: #000000;
-                }
-            """
-            self.setStyleSheet(light_stylesheet)
-        elif theme_name == "System Default":
+        if theme_name == "System Default":
             self.setStyleSheet("")
         elif theme_name == "Dark":
             dark_stylesheet = """
@@ -1205,30 +1183,22 @@ class StopMotionApp(QWidget):
                     border: 1px solid #666;
                     padding: 4px;
                 }
-                QLabel, QCheckBox {
-                    color: #f0f0f0;
-                }
-                QComboBox {
-                    background-color: #444;
-                    color: white;
-                    border: 1px solid #666;
-                }
-                QListWidget {
-                    background-color: #333;
-                    color: white;
-                }
             """
             self.setStyleSheet(dark_stylesheet)
-
-        elif theme_name == "Custom" and hasattr(self, "custom_theme"):
+        elif theme_name == "Custom":
             defaults = {
                 "bg_color": "#2b2b2b",
                 "text_color": "#f0f0f0",
                 "button_bg": "#444",
                 "button_text": "white"
             }
+
+            if not isinstance(getattr(self, "custom_theme", None), dict):
+                self.custom_theme = {}
+
             theme = {**defaults, **self.custom_theme}
-            custom_stylesheet = f"""
+
+            css = f"""
                 QWidget {{
                     background-color: {theme['bg_color']};
                     color: {theme['text_color']};
@@ -1239,22 +1209,34 @@ class StopMotionApp(QWidget):
                     border: 1px solid #666;
                     padding: 4px;
                 }}
-                QLabel, QCheckBox {{
-                    color: {theme['text_color']};
-                }}
-                QComboBox {{
-                    background-color: {theme['button_bg']};
-                    color: {theme['button_text']};
-                    border: 1px solid #666;
-                }}
-                QListWidget {{
-                    background-color: {theme['bg_color']};
-                    color: {theme['text_color']};
-                }}
             """
-            self.setStyleSheet(custom_stylesheet)
-
-
+            self.setStyleSheet(css)
+        elif theme_name == "Light":
+                light_stylesheet = """
+                    QWidget {
+                        background-color: #f0f0f0;
+                        color: #2b2b2b;
+                    }
+                    QPushButton {
+                        background-color: #ddd;
+                        color: #000;
+                        border: 1px solid #aaa;
+                        padding: 4px;
+                    }
+                    QLabel, QCheckBox {
+                        color: #2b2b2b;
+                    }
+                    QComboBox {
+                        background-color: #eee;
+                        color: #000;
+                        border: 1px solid #aaa;
+                    }
+                    QListWidget {
+                        background-color: #ffffff;
+                        color: #000000;
+                    }
+                """
+                self.setStyleSheet(light_stylesheet)
     def apply_custom_theme(self):
         bg = QColor(self.custom_colors["background"])
         text = QColor(self.custom_colors["text"])
