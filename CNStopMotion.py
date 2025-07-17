@@ -15,15 +15,71 @@ import numpy as np
 from PySide6.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QListWidget,
     QFileDialog, QHBoxLayout, QSlider, QMessageBox, QListWidgetItem,
-    QSpinBox, QComboBox, QCheckBox, QSizePolicy
+    QComboBox, QCheckBox, QSizePolicy, QDialog, QColorDialog, QSpinBox
 )
-from PySide6.QtGui import QPixmap, QImage, QIcon, QKeySequence, QShortcut
+
+from PySide6.QtGui import QPixmap, QImage, QIcon, QKeySequence, QShortcut, QColor
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize
 
 from pygrabber.dshow_graph import FilterGraph
 
 
+class ThemeEditorDialog(QDialog):
+    def __init__(self, parent=None, initial_theme=None):
+        super().__init__(parent)
+        self.setWindowTitle("Custom Theme Editor")
+        self.theme = initial_theme or {}
 
+        layout = QVBoxLayout()
+
+        self.color_buttons = {}
+        self.color_fields = {
+            "bg_color": "Background Color",
+            "text_color": "Text Color",
+            "button_bg": "Button Background",
+            "button_text": "Button Text"
+        }
+
+        for key, label_text in self.color_fields.items():
+            hbox = QHBoxLayout()
+            label = QLabel(label_text)
+            btn = QPushButton("Choose...")
+            btn.clicked.connect(lambda _, k=key: self.pick_color(k))
+            color_display = QLabel()
+            color_display.setFixedSize(60, 20)
+            color_display.setStyleSheet(f"background-color: {self.theme.get(key, '#ffffff')}")
+            hbox.addWidget(label)
+            hbox.addWidget(color_display)
+            hbox.addWidget(btn)
+            layout.addLayout(hbox)
+            self.color_buttons[key] = color_display
+
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self.accept)
+        layout.addWidget(apply_btn)
+
+        self.setLayout(layout)
+
+    def pick_color(self, key):
+        current = self.theme.get(key, "#ffffff")
+        color = QColorDialog.getColor(QColor(current), self, f"Choose {self.color_fields[key]}")
+        if color.isValid():
+            hex_color = color.name()
+            self.theme[key] = hex_color
+            self.color_buttons[key].setStyleSheet(f"background-color: {hex_color}")
+
+    def get_theme(self):
+        return self.theme
+
+    def select_bg_color(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.custom_theme["bg_color"] = color.name()
+
+    def select_text_color(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.custom_theme["text_color"] = color.name()
 # 1) Camera search dialog popup
 class CameraSearchDialog(QWidget):
     def __init__(self, parent=None):
@@ -258,11 +314,22 @@ class StopMotionApp(QWidget):
         onion_layout.addWidget(self.onion_checkbox)
         layout.addLayout(onion_layout)
 
-
+                # Theme selector UI
+        self.theme_label = QLabel("Theme:")
+        self.theme_selector = QComboBox()
+        self.theme_selector.addItems(["Light", "Dark", "Custom", "System Default"])
+        self.theme_selector.currentTextChanged.connect(self.change_theme)
+        camera_layout.addWidget(self.theme_label)
+        camera_layout.addWidget(self.theme_selector)
+        self.theme_selector.setCurrentText("Light")
+        self.edit_theme_btn = QPushButton("Edit Custom Theme")
+        camera_layout.addWidget(self.edit_theme_btn)
+        self.edit_theme_btn.clicked.connect(self.open_theme_editor)
         self.setLayout(layout)
         self.camera_selector.currentIndexChanged.connect(self.change_camera)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
+        
         #self.timer.start(30)
         self.autosave_timer = QTimer()
         self.autosave_timer.timeout.connect(self.save_project)
@@ -984,14 +1051,14 @@ class StopMotionApp(QWidget):
     def save_metadata(self):
         if not self.project_path:
             return
-
         metadata = {
             "fps": self.fps_spin.value(),
             "onion_opacity": self.opacity_slider.value(),
             "onion_layers": self.onion_layer_spin.value(),
-            "loop_playback": self.loop_checkbox.isChecked()
+            "loop_playback": self.loop_checkbox.isChecked(),
+            "theme": self.theme_selector.currentText(),
+            "custom_theme": getattr(self, "custom_theme", None),
         }
-
         meta_path = os.path.join(self.project_path, "project_meta.json")
         try:
             with open(meta_path, "w") as f:
@@ -1002,11 +1069,9 @@ class StopMotionApp(QWidget):
     def load_metadata(self):
         if not self.project_path:
             return
-
         meta_path = os.path.join(self.project_path, "project_meta.json")
         if not os.path.exists(meta_path):
             return
-
         try:
             with open(meta_path, "r") as f:
                 metadata = json.load(f)
@@ -1015,9 +1080,20 @@ class StopMotionApp(QWidget):
             self.opacity_slider.setValue(metadata.get("onion_opacity", 50))
             self.onion_layer_spin.setValue(metadata.get("onion_layers", 3))
             self.loop_checkbox.setChecked(metadata.get("loop_playback", True))
+            theme = metadata.get("theme", "Light")
+            self.custom_theme = metadata.get("custom_theme", None)
+
+            if theme in ["Light", "Dark", "Custom"]:
+                self.theme_selector.setCurrentText(theme)
+            else:
+                self.theme_selector.setCurrentText("Light")
+
+            if theme == "Custom" and self.custom_theme:
+                self.change_theme("Custom")
 
         except Exception as e:
             print(f"Failed to load metadata: {e}")
+
     def duplicate_frame(self):
         selected_items = self.timeline.selectedItems()
         if not selected_items:
@@ -1078,6 +1154,121 @@ class StopMotionApp(QWidget):
                 return
 
         print("No alternate working cameras available.")
+    def change_theme(self, theme_name):
+        if theme_name == "Light":
+            light_stylesheet = """
+                QWidget {
+                    background-color: #f0f0f0;
+                    color: #2b2b2b;
+                }
+                QPushButton {
+                    background-color: #ddd;
+                    color: #000;
+                    border: 1px solid #aaa;
+                    padding: 4px;
+                }
+                QLabel, QCheckBox {
+                    color: #2b2b2b;
+                }
+                QComboBox {
+                    background-color: #eee;
+                    color: #000;
+                    border: 1px solid #aaa;
+                }
+                QListWidget {
+                    background-color: #ffffff;
+                    color: #000000;
+                }
+            """
+            self.setStyleSheet(light_stylesheet)
+        elif theme_name == "System Default":
+            self.setStyleSheet("")
+        elif theme_name == "Dark":
+            dark_stylesheet = """
+                QWidget {
+                    background-color: #2b2b2b;
+                    color: #f0f0f0;
+                }
+                QPushButton {
+                    background-color: #444;
+                    color: white;
+                    border: 1px solid #666;
+                    padding: 4px;
+                }
+                QLabel, QCheckBox {
+                    color: #f0f0f0;
+                }
+                QComboBox {
+                    background-color: #444;
+                    color: white;
+                    border: 1px solid #666;
+                }
+                QListWidget {
+                    background-color: #333;
+                    color: white;
+                }
+            """
+            self.setStyleSheet(dark_stylesheet)
+
+        elif theme_name == "Custom" and hasattr(self, "custom_theme"):
+            defaults = {
+                "bg_color": "#2b2b2b",
+                "text_color": "#f0f0f0",
+                "button_bg": "#444",
+                "button_text": "white"
+            }
+            theme = {**defaults, **self.custom_theme}
+            custom_stylesheet = f"""
+                QWidget {{
+                    background-color: {theme['bg_color']};
+                    color: {theme['text_color']};
+                }}
+                QPushButton {{
+                    background-color: {theme['button_bg']};
+                    color: {theme['button_text']};
+                    border: 1px solid #666;
+                    padding: 4px;
+                }}
+                QLabel, QCheckBox {{
+                    color: {theme['text_color']};
+                }}
+                QComboBox {{
+                    background-color: {theme['button_bg']};
+                    color: {theme['button_text']};
+                    border: 1px solid #666;
+                }}
+                QListWidget {{
+                    background-color: {theme['bg_color']};
+                    color: {theme['text_color']};
+                }}
+            """
+            self.setStyleSheet(custom_stylesheet)
+
+
+    def apply_custom_theme(self):
+        bg = QColor(self.custom_colors["background"])
+        text = QColor(self.custom_colors["text"])
+        btn = QColor(self.custom_colors["button"])
+
+        palette = QPalette()
+        palette.setColor(QPalette.Window, bg)
+        palette.setColor(QPalette.WindowText, text)
+        palette.setColor(QPalette.Base, bg)  # for text fields
+        palette.setColor(QPalette.Text, text)
+        palette.setColor(QPalette.Button, btn)
+        palette.setColor(QPalette.ButtonText, text)
+
+        QApplication.instance().setPalette(palette)
+
+    def open_theme_editor(self):
+        if not hasattr(self, "custom_theme") or not isinstance(self.custom_theme, dict):
+            self.custom_theme = {}
+
+        dlg = ThemeEditorDialog(self, self.custom_theme)
+        if dlg.exec():
+            self.custom_theme = dlg.get_theme()
+            self.change_theme("Custom")
+            self.save_metadata()  # ensures it's saved with the project
 
     def closeEvent(self, event):
         if self.unsaved_changes:
