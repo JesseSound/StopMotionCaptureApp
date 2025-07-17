@@ -498,10 +498,18 @@ class StopMotionApp(QWidget):
                 print("Camera is already opened. Restarting timer if needed.")
                 if not self.timer.isActive():
                     self.timer.start(30)
+                return
             else:
-                print("Camera not available. Attempting open.")
+                print("Camera not available. Releasing and rescanning.")
+                if self.cap:
+                    self.cap.release()
                 self.cap = None
-                self.open_camera(self.current_camera_index)
+
+        self.start_camera_search()
+
+        # Delay fallback camera open until scan is done
+        QTimer.singleShot(1500, self.try_other_camera_if_still_dead)
+
 
 
     def capture_frame(self):
@@ -1044,6 +1052,32 @@ class StopMotionApp(QWidget):
 
         self.refresh_timeline()
         self.timeline.scrollToBottom()
+        
+    def try_other_camera_if_still_dead(self):
+        if not self.available_cameras:
+            print("No cameras found after rescan.")
+            QMessageBox.warning(self, "No Cameras", "No cameras were found after rescan.")
+            return
+
+        with self.cap_lock:
+            if self.cap and self.cap.isOpened():
+                print("Fallback not needed; camera resumed.")
+                return
+
+        print("Trying other available cameras as fallback...")
+        for idx in self.available_cameras:
+            if idx != self.current_camera_index:
+                print(f"Fallback to camera index {idx}")
+                self.current_camera_index = idx
+                self.open_camera(idx)
+
+                # Reflect in dropdown UI
+                combo_index = self.camera_selector.findData(idx)
+                if combo_index != -1:
+                    self.camera_selector.setCurrentIndex(combo_index)
+                return
+
+        print("No alternate working cameras available.")
 
     def closeEvent(self, event):
         if self.unsaved_changes:
