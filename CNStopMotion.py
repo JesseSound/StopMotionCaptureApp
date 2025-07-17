@@ -109,8 +109,8 @@ class StopMotionApp(QWidget):
         self.current_camera_index = 0
         self.cap = None
         self.camera_open_thread = None
-        self.available_cameras = [] 
-       
+        
+        self.current_camera_name = None
         self.loop_playback = True
         self.gif_loop_value = 0 if self.loop_playback else 1
         self.unsaved_changes = False
@@ -206,9 +206,16 @@ class StopMotionApp(QWidget):
         layout = QVBoxLayout()
 
         camera_layout = QHBoxLayout()
+
         camera_layout.addWidget(QLabel("Select Camera:"))
         camera_layout.addWidget(self.camera_selector)
+        self.rescan_btn = QPushButton("Rescan")
+        self.rescan_btn.setToolTip("Rescan for available cameras")
+        self.rescan_btn.clicked.connect(self.start_camera_search)
+        camera_layout.addWidget(self.rescan_btn)
+
         layout.addLayout(camera_layout)
+
 
         layout.addWidget(self.video_label)
 
@@ -223,8 +230,13 @@ class StopMotionApp(QWidget):
         controls.addWidget(self.open_btn)
         controls.addWidget(self.play_pause_btn)
         controls.addWidget(self.loop_checkbox)
-        controls.addWidget(QLabel("FPS:"))
-        controls.addWidget(self.fps_spin)
+        fps_layout = QHBoxLayout()
+        fps_layout.addWidget(QLabel("FPS:"))
+        fps_layout.addWidget(self.fps_spin)
+        fps_container = QWidget()
+        fps_container.setLayout(fps_layout)
+        controls.addWidget(fps_container)
+
         controls.addWidget(self.export_btn)
         controls.addWidget(self.export_gif_btn)
         controls.addWidget(self.back_to_live_btn)
@@ -251,7 +263,7 @@ class StopMotionApp(QWidget):
         self.camera_selector.currentIndexChanged.connect(self.change_camera)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
-        self.timer.start(30)
+        #self.timer.start(30)
         self.autosave_timer = QTimer()
         self.autosave_timer.timeout.connect(self.save_project)
         self.autosave_timer.start(300_000)  # Every 5 minutes
@@ -291,50 +303,77 @@ class StopMotionApp(QWidget):
 
 
     def on_cameras_found(self, cameras):
-        # cameras = list of (index, name) tuples
-
         if self.camera_search_dialog:
             self.camera_search_dialog.close()
             self.camera_search_dialog = None
 
-        self.available_cameras = [index for index, name in cameras]
+        self.available_cameras = {index: name for index, name in cameras}
+        self.camera_selector.blockSignals(True)
         self.camera_selector.clear()
 
         for index, name in cameras:
             self.camera_selector.addItem(name, index)
 
+        self.camera_selector.blockSignals(False)
+
         if not cameras:
             self.camera_selector.addItem("No Camera Found")
             self.capture_btn.setEnabled(False)
             QMessageBox.warning(self, "No Cameras", "No cameras were found.")
+            self.current_camera_index = None
+            self.current_camera_name = None
+            self.cap = None
         else:
-            if self.cap is None or self.current_camera_index not in self.available_cameras:
-                self.current_camera_index = cameras[0][0]  # first index
-                self.open_camera(self.current_camera_index)
+            # Try to find index of previously used camera by matching name
+            matching_index = None
+            if self.current_camera_name:
+                for idx, name in self.available_cameras.items():
+                    if name == self.current_camera_name:
+                        matching_index = idx
+                        break
+
+            # If no match found, pick first camera in the list
+            if matching_index is None:
+                matching_index = cameras[0][0]
+                self.current_camera_name = cameras[0][1]
+
+            # Set dropdown selection
+            combo_index = self.camera_selector.findData(matching_index)
+            if combo_index != -1:
+                self.camera_selector.setCurrentIndex(combo_index)
+
+            self.current_camera_index = matching_index
+            self.open_camera(self.current_camera_index)
+
 
 
     def open_camera(self, index):
         with self.cap_lock:
-            if self.cap and self.cap.isOpened() and self.current_camera_index == index:
-                print("Camera already open and matches requested index.")
+            camera_name = self.available_cameras.get(index, None)
+            if (
+                self.cap
+                and self.cap.isOpened()
+                and self.current_camera_index == index
+                and self.current_camera_name == camera_name
+            ):
+                print("Camera already open and matches requested index and name.")
                 return
-        self.current_camera_index = index 
-        # Instead of forcibly quitting and waiting, just skip starting a new thread if one is running
+
+        # Avoid starting a thread while one is still running
         if self.camera_open_thread and self.camera_open_thread.isRunning():
             print("Camera open thread still running, ignoring open request")
             return
 
+        self.current_camera_index = index  # Set the index now, but not the name yet
         self.camera_selector.setEnabled(False)
         self.capture_btn.setEnabled(False)
         self.video_label.setText("Loading camera feed...")
         self.video_label.setAlignment(Qt.AlignCenter)
 
-
         self.camera_open_thread = CameraOpenThread(index)
         self.camera_open_thread.camera_opened.connect(self.on_camera_opened)
         self.camera_open_thread.finished.connect(self.cleanup_camera_thread)
         self.camera_open_thread.start()
-
 
     def cleanup_camera_thread(self):
         if self.camera_open_thread:
@@ -358,17 +397,18 @@ class StopMotionApp(QWidget):
                     self.cap.release()
                 self.cap = cap
 
-            self.capture_btn.setEnabled(True)
             self.current_camera_index = index
+            self.current_camera_name = self.available_cameras.get(index, None)  # ✅ Update name only here
 
-            # Stop playback timer if running, sync UI
+            self.capture_btn.setEnabled(True)
+
+            # Stop playback if active
             if self.playback_timer.isActive():
                 self.playback_timer.stop()
                 self.play_pause_btn.setChecked(False)
 
             if not self.timer.isActive():
                 self.timer.start(30)
-
         else:
             if index == 0:
                 self.start_camera_search()
@@ -390,56 +430,78 @@ class StopMotionApp(QWidget):
         else:
             print("Warning: Expected image data but got something else")
 
+    def safe_resume_camera(self):
+        if self.camera_open_thread and self.camera_open_thread.isRunning():
+            print("Camera open thread is still running. Delaying resume.")
+            QTimer.singleShot(1000, self.safe_resume_camera)
+            return
 
+        print("Safe to resume live feed")
+        self.resume_live_feed()
 
     def update_frame(self):
         if self.is_playback_mode:
-            return  # Don't update live feed while playing back
+            return
 
-        with self.cap_lock:
-            if not self.cap:
-                return
+        try:
+            with self.cap_lock:
+                if not self.cap or not self.cap.isOpened():
+                    print("cap missing or not opened")
+                    return
 
-            ret, frame = self.cap.read()
-            if not ret or frame is None:
-                print("Frame read failed, resuming live feed...")
-                self.cap.release()
-                self.cap = None
-                QTimer.singleShot(1000, self.resume_live_feed)
-                return
+                ret, frame = self.cap.read()
+                if not ret or frame is None:
+                    print("Frame read failed. Releasing and retrying...")
 
-            self.latest_frame = frame.copy()
+                    try:
+                        self.cap.release()
+                    except Exception as e:
+                        print(f"Error while releasing cap: {e}")
 
-        # Now that we're outside the lock, process the frame
-        if self.onion_checkbox.isChecked() and self.captured_frames:
-            self.update_onion_skin()
-        else:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = frame.shape
-            bytes_per_line = ch * w
-            qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            pix = QPixmap.fromImage(qt_image).scaled(
-                self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio
-            )
-            self.video_label.setPixmap(pix)
-            if self.video_label.text():
-                self.video_label.setText("")
+                    self.cap = None
+
+                    # Wait and attempt to resume
+                    QTimer.singleShot(1000, self.safe_resume_camera)
+                    return
+
+                self.latest_frame = frame.copy()
+
+            # Post-processing (onion skin or frame display)
+            if self.onion_checkbox.isChecked() and self.captured_frames:
+                self.update_onion_skin()
+            else:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = frame.shape
+                bytes_per_line = ch * w
+                qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                pix = QPixmap.fromImage(qt_image).scaled(
+                    self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio
+                )
+                self.video_label.setPixmap(pix)
+                if self.video_label.text():
+                    self.video_label.setText("")
+
+        except Exception as e:
+            print(f"Exception in update_frame: {e}")
+            self.cap = None
+            
 
     def resume_live_feed(self):
-        # Stop playback timer if running
+        print("resume_live_feed called")
+
         if self.playback_timer.isActive():
             self.playback_timer.stop()
-            self.play_pause_btn.setChecked(False)  # keep UI synced
+            self.play_pause_btn.setChecked(False)
 
         with self.cap_lock:
             if self.cap and self.cap.isOpened():
-                # Start live feed timer if not running
+                print("Camera is already opened. Restarting timer if needed.")
                 if not self.timer.isActive():
                     self.timer.start(30)
             else:
-                # Open camera asynchronously
+                print("Camera not available. Attempting open.")
+                self.cap = None
                 self.open_camera(self.current_camera_index)
-
 
 
     def capture_frame(self):
@@ -796,17 +858,15 @@ class StopMotionApp(QWidget):
             return
 
         selected_index = self.camera_selector.itemData(index)
-        print(f"Dropdown index {index} selected. Camera index: {selected_index}")
-
         if selected_index is None:
-            print("No camera index associated with selected item.")
             return
 
         if selected_index == self.current_camera_index:
-            print("Selected camera is already active.")
+            # User selected the currently active camera; do nothing
             return
 
-        self.open_camera(selected_index)
+        self.current_camera_index = selected_index
+        self.open_camera(self.current_camera_index)
 
 
 
