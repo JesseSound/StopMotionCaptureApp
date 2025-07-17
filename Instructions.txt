@@ -1,0 +1,32 @@
+
+---
+
+## **HOW TO USE (General Overview)**
+
+1. **Create a New Project**
+   Start by creating a new folder and selecting it—this will be your project folder. Each project is stored in its own folder.
+
+2. **Capture Frames**
+   Click **"Capture Frame"** to take a picture and add it to the timeline. You can click on individual frames to review them. To return to the live camera view, click **"Back to Live Feed."**
+
+3. **Duplicate Frames**
+   Select a frame in the timeline, then click **"Duplicate"**. This creates a copy of the selected frame, placed immediately after it.
+
+4. **Delete Frames**
+   To delete a frame, select it and click **"Delete."** Deletion isn't permanent until you close the app or open a different project.
+
+5. **Undo/Redo**
+   Undo and redo are currently limited to deleting frames. If you delete something by mistake, use **"Undo"** to bring it back, or **"Redo"** to delete it again.
+
+6. **Export Your Animation**
+   Export your timeline as a **GIF** or **MP4**. If **"Loop"** is checked, the exported GIF will loop continuously; if unchecked, it will play only once.
+
+7. **Rescan for Cameras**
+   Use the **"Rescan"** button to search your system for available cameras.
+
+8. **Themes**
+   You can switch between different UI themes. If you choose **"Custom Theme,"** click **"Edit Custom Theme"** to adjust settings. Theme preferences are saved per project.
+
+---
+
+
