@@ -27,7 +27,7 @@ An open-source stop motion animation app built with Python and PySide6, designed
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/yourusername/cn-stop-motion-app.git
+   git clone https://github.com/jessesound/cn-stop-motion-app.git
    cd cn-stop-motion-app
    ```
 
