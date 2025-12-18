@@ -102,4 +102,3 @@ SOFTWARE.
 
 ---
 
-Would you like me to help generate a sample `requirements.txt` or any other docs for your repo?
