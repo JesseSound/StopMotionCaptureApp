@@ -4,3 +4,11 @@
 2026-02-19 18:49:45,148 [INFO] Camera already opened. Restarting timer if needed.
 2026-02-19 18:49:53,653 [INFO] Closing app...
 2026-02-19 18:49:53,945 [INFO] Closed cleanly.
+2026-02-20 15:14:13,393 [INFO] Resolution requested=1280x720 applied=1280x720
+2026-02-20 15:14:40,544 [INFO] Camera already open and matches requested index and name.
+2026-02-20 15:15:16,918 [INFO] resume_live_feed called
+2026-02-20 15:15:16,936 [INFO] Camera already opened. Restarting timer if needed.
+2026-02-20 15:15:28,771 [INFO] resume_live_feed called
+2026-02-20 15:15:28,773 [INFO] Camera already opened. Restarting timer if needed.
+2026-02-20 15:15:57,155 [INFO] Closing app...
+2026-02-20 15:15:57,419 [INFO] Closed cleanly.

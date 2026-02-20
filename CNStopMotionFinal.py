@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import sys
@@ -65,6 +64,7 @@ class UndoManager:
         self._redo.clear()
 
     def push(self, action: Action) -> None:
+        # Any new action clears redo history (standard behavior)
         self._undo.append(action)
         self._redo.clear()
 
@@ -94,7 +94,7 @@ class ProjectStore:
         self.project_path: str = ""
         self.frames: List[str] = []
         self.unsaved_changes: bool = False
-        # map original_path -> trashed_path
+        # map original_path -> trashed_path (so restore returns exact file)
         self._trashed: Dict[str, str] = {}
 
     def has_project(self) -> bool:
@@ -123,7 +123,7 @@ class ProjectStore:
             os.makedirs(self.trash_dir(), exist_ok=True)
 
     def _next_frame_filename(self) -> str:
-        # preserve existing naming behavior
+        # Preserve original naming behavior for capture
         return f"frame_{len(self.frames):04d}.png"
 
     def capture_from_bgr(self, frame_bgr: np.ndarray) -> Tuple[int, str]:
@@ -175,7 +175,6 @@ class ProjectStore:
     def soft_delete(self, original_path: str) -> None:
         """
         Move file into .trash instead of deleting.
-        Stores mapping so we can restore exactly on redo/undo.
         """
         if not self.project_path:
             return
@@ -227,7 +226,7 @@ class ProjectStore:
 
     def delete_frame(self, index: int) -> Action:
         """
-        Delete frame from timeline, but soft-delete the underlying file.
+        Remove from timeline and soft-delete file to trash.
         """
         if index < 0 or index >= len(self.frames):
             raise IndexError("Frame index out of range")
@@ -239,17 +238,16 @@ class ProjectStore:
 
     def restore_deleted(self, action: Action) -> None:
         """
-        Undo(delete): restore file + reinsert into frames list.
+        Undo(delete): restore file + reinsert.
         """
         self.restore_from_trash(action.path)
-
         idx = max(0, min(action.index, len(self.frames)))
         self.frames.insert(idx, action.path)
         self.unsaved_changes = True
 
     def remove_added(self, action: Action) -> None:
         """
-        Undo(add): remove from frames list + move file to trash (NOT permanent delete).
+        Undo(add): remove from list + soft-delete.
         """
         if action.path in self.frames:
             self.frames.remove(action.path)
@@ -258,10 +256,9 @@ class ProjectStore:
 
     def reapply_add(self, action: Action) -> None:
         """
-        Redo(add): restore file from trash (if needed) + reinsert.
+        Redo(add): restore file + reinsert.
         """
         self.restore_from_trash(action.path)
-
         idx = max(0, min(action.index, len(self.frames)))
         if action.path not in self.frames:
             self.frames.insert(idx, action.path)
@@ -269,7 +266,7 @@ class ProjectStore:
 
     def reapply_delete(self, action: Action) -> None:
         """
-        Redo(delete): remove from frames list + move file to trash again.
+        Redo(delete): remove from list + soft-delete again.
         """
         if action.path in self.frames:
             self.frames.remove(action.path)
@@ -293,8 +290,6 @@ class ProjectStore:
                 else:
                     log.info("Skipping missing or unreadable file: %s", full_path)
         self.frames = frames
-
-        # Ensure trash dir exists (we don't auto-purge on open)
         self.ensure_trash_dir()
 
     def save_metadata(self, metadata: dict) -> None:
@@ -365,7 +360,6 @@ class CameraOpenThread(QThread):
         self.index = index
 
     def run(self):
-        # On Windows, CAP_DSHOW typically respects resolution/FourCC better.
         try:
             if sys.platform.startswith("win"):
                 cap = cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
@@ -555,8 +549,17 @@ class StopMotionApp(QWidget):
         self.timeline.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.timeline.setWrapping(False)
 
+        # Enable multi-select (needed for Dup Reverse)
+        self.timeline.setSelectionMode(QListWidget.ExtendedSelection)
+
         self.delete_btn = QPushButton("Delete Frame")
         self.duplicate_btn = QPushButton("Duplicate Frame")
+
+        # NEW BUTTON: Duplicate selected in reverse
+        self.dup_reverse_btn = QPushButton("Dup Reverse")
+        self.dup_reverse_btn.setToolTip("Duplicate selected frame(s) in reverse order")
+        self.dup_reverse_btn.clicked.connect(self.duplicate_selected_reverse)
+
         self.undo_btn = QPushButton("Undo")
         self.redo_btn = QPushButton("Redo")
         self.save_btn = QPushButton("Save Project")
@@ -644,7 +647,7 @@ class StopMotionApp(QWidget):
         self.new_project_btn.setToolTip("Start a new project")
         self.play_pause_btn.setToolTip("Play/Pause preview")
 
-        # Layout (unchanged except resolution controls)
+        # Layout (unchanged except resolution controls + new dup reverse button)
         layout = QVBoxLayout()
 
         camera_layout = QHBoxLayout()
@@ -671,6 +674,7 @@ class StopMotionApp(QWidget):
         controls.addWidget(self.capture_btn)
         controls.addWidget(self.delete_btn)
         controls.addWidget(self.duplicate_btn)
+        controls.addWidget(self.dup_reverse_btn)  # <-- NEW BUTTON next to Duplicate
         controls.addWidget(self.undo_btn)
         controls.addWidget(self.redo_btn)
         controls.addWidget(self.new_project_btn)
@@ -1046,7 +1050,6 @@ class StopMotionApp(QWidget):
 
         frame_path = self.project.frames[self.playback_index]
         if not os.path.exists(frame_path):
-            # With Trash model, this should be rare, but keep safe behavior.
             log.info("Frame path does not exist: %s", frame_path)
             self.playback_index += 1
             return
@@ -1163,6 +1166,75 @@ class StopMotionApp(QWidget):
 
         self.refresh_timeline()
         self.timeline.scrollToBottom()
+
+    # -------- NEW FEATURE: duplicate selected frames in reverse order --------
+    def _make_unique_frame_path(self) -> str:
+        """
+        Generates a unique frame_XXXX.png path in the project folder.
+        This avoids collisions when inserting duplicates mid-list.
+        """
+        base_dir = self.project.project_path
+        if not base_dir:
+            raise RuntimeError("No project open")
+
+        i = max(0, len(self.project.frames))
+        while True:
+            name = f"frame_{i:04d}.png"
+            path = os.path.join(base_dir, name)
+            if (not os.path.exists(path)) and (path not in self.project.frames):
+                return path
+            i += 1
+
+    def duplicate_selected_reverse(self) -> None:
+        selected_items = self.timeline.selectedItems()
+        if not selected_items:
+            QMessageBox.information(self, "No Frames Selected", "Please select one or more frames.")
+            return
+
+        if not self.project.has_project():
+            QMessageBox.warning(self, "No Project", "Please create or open a project first.")
+            return
+
+        # Selected rows in ascending order
+        selected_rows = sorted(self.timeline.row(item) for item in selected_items)
+        if not selected_rows:
+            return
+
+        # Source paths in reverse order
+        source_paths = [self.project.frames[r] for r in reversed(selected_rows)]
+
+        # Insert after the last selected frame
+        insert_at = selected_rows[-1] + 1
+
+        added_any = False
+
+        for offset, src_path in enumerate(source_paths):
+            if not os.path.exists(src_path):
+                QMessageBox.warning(self, "Missing Frame", f"Frame is missing:\n{src_path}")
+                continue
+
+            dst_path = self._make_unique_frame_path()
+
+            try:
+                shutil.copy(src_path, dst_path)
+            except Exception as e:
+                QMessageBox.critical(self, "Duplicate Failed", f"Could not copy:\n{src_path}\n\n{e}")
+                continue
+
+            idx = insert_at + offset
+            self.project.frames.insert(idx, dst_path)
+
+            # Push undo action for each inserted duplicate.
+            # (Redo stays correct; this just means "batch" undo is one-per-copy like your other operations.)
+            self.undo.push(Action(type="add", path=dst_path, index=idx))
+
+            added_any = True
+
+        if added_any:
+            self.project.unsaved_changes = True
+            self.refresh_timeline()
+            self.timeline.scrollToBottom()
+    # ----------------------------------------------------------------------
 
     def undo_action(self):
         action = self.undo.pop_undo()
@@ -1567,7 +1639,7 @@ class StopMotionApp(QWidget):
 
         log.info("Closing app...")
 
-        # Purge trash on close (your requested behavior)
+        # Purge trash on close (requested behavior)
         try:
             if self.project.has_project():
                 self.project.purge_trash()
